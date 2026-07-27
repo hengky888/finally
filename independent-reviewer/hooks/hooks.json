@@ -10,8 +10,5 @@
         ]
       }
     ]
-  },
-  "enabledPlugins": {
-    "independent-reviewer@heng-tools": true
   }
 }

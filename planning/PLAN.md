@@ -101,7 +101,6 @@ finally/
 ├── db/                       # Volume mount target (SQLite file lives here at runtime)
 │   └── .gitkeep              # Directory exists in repo; finally.db is gitignored
 ├── Dockerfile                # Multi-stage build (Node → Python)
-├── docker-compose.yml        # Optional convenience wrapper
 ├── .env                      # Environment variables (gitignored, .env.example committed)
 └── .gitignore
 ```
@@ -110,7 +109,7 @@ finally/
 
 - **`frontend/`** is a self-contained Next.js project. It knows nothing about Python. It talks to the backend via `/api/*` endpoints and `/api/stream/*` SSE endpoints. Internal structure is up to the Frontend Engineer agent.
 - **`backend/`** is a self-contained uv project with its own `pyproject.toml`. It owns all server logic including database initialization, schema, seed data, API routes, SSE streaming, market data, and LLM integration. Internal structure is up to the Backend/Market Data agents.
-- **`backend/db/`** contains schema SQL definitions and seed logic. The backend lazily initializes the database on first request — creating tables and seeding default data if the SQLite file doesn't exist or is empty.
+- **`backend/db/`** contains schema SQL definitions and seed logic. The backend initializes the database in a FastAPI startup event — creating tables and seeding default data if the SQLite file doesn't exist or is empty.
 - **`db/`** at the top level is the runtime volume mount point. The SQLite file (`db/finally.db`) is created here by the backend and persists across container restarts via Docker volume.
 - **`planning/`** contains project-wide documentation, including this plan. All agents reference files here as the shared contract.
 - **`test/`** contains Playwright E2E tests and supporting infrastructure (e.g., `docker-compose.test.yml`). Unit tests live within `frontend/` and `backend/` respectively, following each framework's conventions.
@@ -121,7 +120,8 @@ finally/
 ## 5. Environment Variables
 
 ```bash
-# Required: OpenRouter API key for LLM chat functionality
+# Required for live LLM chat. The server still boots without it; only real
+# chat calls fail (with a clear error). Not needed when LLM_MOCK=true.
 OPENROUTER_API_KEY=your-openrouter-api-key-here
 
 # Optional: Massive (Polygon.io) API key for real market data
@@ -137,6 +137,7 @@ LLM_MOCK=false
 - If `MASSIVE_API_KEY` is set and non-empty → backend uses Massive REST API for market data
 - If `MASSIVE_API_KEY` is absent or empty → backend uses the built-in market simulator
 - If `LLM_MOCK=true` → backend returns deterministic mock LLM responses (for E2E tests)
+- If `OPENROUTER_API_KEY` is absent and `LLM_MOCK` is not `true` → the server still starts and streams market data; only live chat calls fail, returning an error the frontend can surface
 - The backend reads `.env` from the project root (mounted into the container or read via docker `--env-file`)
 
 ---
@@ -168,6 +169,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 
 - A single background task (simulator or Massive poller) writes to an in-memory price cache
 - The cache holds the latest price, previous price, and timestamp for each ticker
+- The set of priced tickers is the **union of the watchlist and all open positions**. This guarantees any ticker the user holds is always valued, even after it is removed from the watchlist
 - SSE streams read from this cache and push updates to connected clients
 - This architecture supports future multi-user scenarios without changes to the data layer
 
@@ -175,9 +177,10 @@ Both the simulator and the Massive client implement the same abstract interface.
 
 - Endpoint: `GET /api/stream/prices`
 - Long-lived SSE connection; client uses native `EventSource` API
-- Server pushes price updates for all tickers known to the system at a regular cadence (~500ms) — in the single-user model this is equivalent to the user's watchlist
-- Each SSE event contains ticker, price, previous price, timestamp, and change direction
-- Client handles reconnection automatically (EventSource has built-in retry)
+- Server pushes price updates for all priced tickers (watchlist ∪ open positions) at a regular cadence (~500ms)
+- Each SSE event contains ticker, price, previous price, timestamp, and a `direction` field: one of `"up"`, `"down"`, or `"flat"`
+- The stream re-emits every priced ticker each tick, including unchanged ones (`"flat"`). In real-data mode Massive only refreshes every 2-15s, so most ticks between polls are `"flat"` — the frontend must not treat every tick as a genuine price move
+- Client handles reconnection automatically (EventSource has built-in retry). There is no `Last-Event-ID` replay: a reconnecting client resumes from the live cache and any ticks missed during the gap are lost (acceptable for this app)
 
 ---
 
@@ -185,7 +188,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 
 ### SQLite with Lazy Initialization
 
-The backend checks for the SQLite database on startup (or first request). If the file doesn't exist or tables are missing, it creates the schema and seeds default data. This means:
+The backend initializes the database in a FastAPI **startup event** (not lazily on first request), so the schema always exists before the market task, the 30-second snapshot task, or `/api/health` can run. If the file doesn't exist or tables are missing, it creates the schema and seeds default data. This means:
 
 - No separate migration step
 - No manual database setup
@@ -215,6 +218,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `avg_cost` REAL
 - `updated_at` TEXT (ISO timestamp)
 - UNIQUE constraint on `(user_id, ticker)`
+- On **buy**, `avg_cost` becomes the quantity-weighted average of old and new lots; `quantity` increases. On **sell**, `avg_cost` is unchanged and `quantity` decreases. When `quantity` reaches 0 (within a small float epsilon), the row is **deleted**.
 
 **trades** — Trade history (append-only log)
 - `id` TEXT PRIMARY KEY (UUID)
@@ -236,7 +240,15 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `user_id` TEXT (default: `"default"`)
 - `role` TEXT (`"user"` or `"assistant"`)
 - `content` TEXT
-- `actions` TEXT (JSON — trades executed, watchlist changes made; null for user messages)
+- `actions` TEXT (JSON — null for user messages; for assistant messages, records what actually happened). Shape:
+  ```json
+  {
+    "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 10, "price": 190.12}],
+    "watchlist_changes": [{"ticker": "PYPL", "action": "add"}],
+    "errors": ["Insufficient cash to buy 10 TSLA"]
+  }
+  ```
+  Only successfully executed trades/changes appear in their arrays; rejected ones are recorded in `errors`.
 - `created_at` TEXT (ISO timestamp)
 
 ### Default Seed Data
@@ -260,12 +272,26 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 | POST | `/api/portfolio/trade` | Execute a trade: `{ticker, quantity, side}` |
 | GET | `/api/portfolio/history` | Portfolio value snapshots over time (for P&L chart) |
 
+**Valuation formulas** (backend and frontend must agree):
+- `position_value = quantity * current_price`
+- `unrealized_pnl = quantity * (current_price - avg_cost)`; `pnl_pct = (current_price - avg_cost) / avg_cost`
+- `total_value = cash_balance + Σ position_value`
+- `current_price` is read from the in-memory price cache. `avg_cost` is cost basis only (no fees).
+
+**Trade execution semantics** (`POST /api/portfolio/trade`, and identical for LLM-issued trades):
+- The fill `price` is read from the price cache at execution time — the client never sends a price.
+- If the ticker is not yet priced, it is **auto-added to the watchlist** so it gets priced and streamed. A symbol the market source does not recognize is rejected with a clear error.
+- Validation (whole-order, no partial fills): reject `quantity <= 0`; reject a buy when `quantity * price > cash_balance`; reject a sell when `quantity` exceeds shares held.
+- On success the trade is appended to `trades`, `positions` and `cash_balance` are updated, and a `portfolio_snapshots` row is written immediately.
+
 ### Watchlist
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/watchlist` | Current watchlist tickers with latest prices |
 | POST | `/api/watchlist` | Add a ticker: `{ticker}` |
 | DELETE | `/api/watchlist/{ticker}` | Remove a ticker |
+
+Removing a ticker from the watchlist does **not** stop it from being priced if the user still holds a position in it — the priced set is `watchlist ∪ open positions` (see §6), so the portfolio can always be valued.
 
 ### Chat
 | Method | Path | Description |
@@ -353,7 +379,7 @@ When `LLM_MOCK=true`, the backend returns deterministic mock responses instead o
 The frontend is a single-page application with a dense, terminal-inspired layout. The specific component architecture and layout system is up to the Frontend Engineer, but the UI should include these elements:
 
 - **Watchlist panel** — grid/table of watched tickers with: ticker symbol, current price (flashing green/red on change), daily change %, and a sparkline mini-chart (accumulated from SSE since page load)
-- **Main chart area** — larger chart for the currently selected ticker, with at minimum price over time. Clicking a ticker in the watchlist selects it here.
+- **Main chart area** — larger chart for the currently selected ticker, showing price over time. Like the sparklines, this series is accumulated from the SSE stream since page load — there is no historical price backfill endpoint, so the chart starts empty on load and fills in progressively. (The P&L chart differs: it is backed by `portfolio_snapshots` and survives reload.) Clicking a ticker in the watchlist selects it here.
 - **Portfolio heatmap** — treemap visualization where each rectangle is a position, sized by portfolio weight, colored by P&L (green = profit, red = loss)
 - **P&L chart** — line chart showing total portfolio value over time, using data from `portfolio_snapshots`
 - **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change
@@ -454,3 +480,33 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
 - AI chat (mocked): send a message, receive a response, trade execution appears inline
 - SSE resilience: disconnect and verify reconnection
+
+---
+
+## 13. Design Decisions Log
+
+> From the doc-review pass. The market-data component is already complete (see `MARKET_DATA_SUMMARY.md`); items below concern the remaining build (portfolio, LLM, frontend, Docker).
+
+### Resolved — now reflected in the sections above
+
+- **Priced set = `watchlist ∪ open positions`** (§6). A held ticker is always valued, even after being removed from the watchlist (§8).
+- **Trade fills** read `price` from the price cache at execution; an unpriced ticker is auto-added to the watchlist; an unrecognized symbol is rejected (§8).
+- **Valuation formulas** for `position_value`, `unrealized_pnl`, `pnl_pct`, and `total_value` are written down (§8).
+- **Trade validation** is whole-order (no partial fills): reject `quantity <= 0`, insufficient cash, or overselling (§8).
+- **Position lifecycle**: buys update `avg_cost` as a weighted average; sells leave it unchanged; the row is deleted at `quantity == 0` (§7).
+- **SSE `direction`** is `"up" | "down" | "flat"`; every priced ticker is re-emitted each tick, so most Massive-mode ticks are `"flat"`; no `Last-Event-ID` replay on reconnect (§6).
+- **Main chart** is accumulated from SSE since page load — no historical backfill endpoint (§10).
+- **`chat_messages.actions`** JSON shape is defined, including an `errors` array for rejected actions (§7).
+- **DB init** happens in a FastAPI startup event, not lazily on first request (§4, §7).
+- **`OPENROUTER_API_KEY`** is required only for live chat; the server boots and streams market data without it (§5).
+- **Dropped the production `docker-compose.yml`** — the `start_*`/`stop_*` scripts are the single mechanism; the test harness keeps its own `docker-compose.test.yml` (§4).
+
+### Considered and deliberately not adopted
+
+- **Naming one chart library per visual.** Left open ("Lightweight Charts or Recharts") — the Frontend Engineer chooses.
+- **Capping `portfolio_snapshots` growth / retention.** Left unbounded; fine for a demo-lifetime container.
+- **Mandating SQLite WAL mode.** Not required at this write volume; left to the backend's discretion.
+
+### Open nit (your call before the schema is frozen)
+
+- **Table name `users_profile`** is plural for a single-row table; `user_profile` reads better. Renaming later is a migration, so decide now. Left unchanged pending your decision.
