@@ -485,7 +485,7 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 
 ## 13. Design Decisions Log
 
-> From the doc-review pass. The market-data component is already complete (see `MARKET_DATA_SUMMARY.md`); items below concern the remaining build (portfolio, LLM, frontend, Docker).
+> From the doc-review pass. The market-data component is already complete (see `market_data_summary.md`); items below concern the remaining build (portfolio, LLM, frontend, Docker).
 
 ### Resolved — now reflected in the sections above
 
