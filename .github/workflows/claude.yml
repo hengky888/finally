@@ -58,3 +58,4 @@ jobs:
 
           claude_args: |
             --max-turns 100
+            --allowedTools "Bash(uv sync:*),Bash(uv run pytest:*),Bash(uv run ruff:*)"
