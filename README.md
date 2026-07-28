@@ -8,7 +8,7 @@ Built entirely by coding agents as the capstone project for an agentic AI coding
 
 The market data subsystem is complete (GBM simulator, Massive/Polygon.io client, price cache, SSE endpoint — 73 tests passing). Portfolio, LLM chat, frontend, and Docker packaging are still to be built.
 
-See [planning/PLAN.md](planning/PLAN.md) for the full specification and [planning/MARKET_DATA_SUMMARY.md](planning/MARKET_DATA_SUMMARY.md) for what exists today.
+See [planning/PLAN.md](planning/PLAN.md) for the full specification and [planning/market_data_summary.md](planning/market_data_summary.md) for what exists today.
 
 ## Planned Features
 
