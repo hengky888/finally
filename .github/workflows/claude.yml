@@ -57,4 +57,4 @@ jobs:
           branch_prefix: "claude/"
 
           claude_args: |
-            --max-turns 50
+            --max-turns 100
