@@ -1,5 +1,7 @@
 """Tests for PriceCache."""
 
+import threading
+
 from app.market.cache import PriceCache
 
 
@@ -101,3 +103,39 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+    def test_concurrent_updates_are_not_lost(self):
+        """Concurrent writers must never clobber each other's version increment."""
+        cache = PriceCache()
+        n_threads = 8
+        updates_per_thread = 200
+
+        def worker(i: int) -> None:
+            for j in range(updates_per_thread):
+                cache.update(f"T{i}", float(j))
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert cache.version == n_threads * updates_per_thread
+
+    def test_version_read_concurrent_with_writes_does_not_raise(self):
+        """Reading version while another thread writes concurrently must not raise or hang."""
+        cache = PriceCache()
+        stop = threading.Event()
+
+        def writer() -> None:
+            while not stop.is_set():
+                cache.update("AAPL", 190.0)
+
+        writer_thread = threading.Thread(target=writer)
+        writer_thread.start()
+        try:
+            for _ in range(2000):
+                assert isinstance(cache.version, int)
+        finally:
+            stop.set()
+            writer_thread.join(timeout=2)
