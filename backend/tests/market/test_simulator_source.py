@@ -5,7 +5,9 @@ import asyncio
 import pytest
 
 from app.market.cache import PriceCache
+from app.market.interface import UnknownSymbolError
 from app.market.simulator import SimulatorDataSource
+from app.market.symbols import InvalidSymbolFormatError
 
 
 @pytest.mark.asyncio
@@ -135,4 +137,66 @@ class TestSimulatorDataSource:
 
         # Just verify it starts and stops cleanly
         await asyncio.sleep(0.2)
+        await source.stop()
+
+    async def test_ensure_priced_returns_cached_price(self):
+        """A ticker already in the cache is returned without any side effects."""
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.1)
+        await source.start(["AAPL"])
+
+        price = await source.ensure_priced("AAPL")
+        assert price == cache.get_price("AAPL")
+
+        await source.stop()
+
+    async def test_ensure_priced_adds_unwatched_symbol(self):
+        """A valid symbol outside the active set is seeded and added on success."""
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.1)
+        await source.start([])
+
+        price = await source.ensure_priced("TSLA")
+
+        assert price is not None
+        assert "TSLA" in source.get_tickers()
+        assert cache.get_price("TSLA") == price
+
+        await source.stop()
+
+    async def test_ensure_priced_normalizes_symbol(self):
+        """Input is normalized (uppercased, trimmed) before validation."""
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.1)
+        await source.start([])
+
+        price = await source.ensure_priced("  aapl ")
+
+        assert price is not None
+        assert "AAPL" in source.get_tickers()
+
+        await source.stop()
+
+    async def test_ensure_priced_rejects_symbol_outside_universe(self):
+        """A well-formed but unrecognized symbol is a permanent rejection."""
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.1)
+        await source.start([])
+
+        with pytest.raises(UnknownSymbolError):
+            await source.ensure_priced("ZZZZ")
+
+        assert "ZZZZ" not in source.get_tickers()
+
+        await source.stop()
+
+    async def test_ensure_priced_rejects_malformed_symbol(self):
+        """A malformed symbol fails shape validation before the universe check."""
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.1)
+        await source.start([])
+
+        with pytest.raises(InvalidSymbolFormatError):
+            await source.ensure_priced("123")
+
         await source.stop()

@@ -1,10 +1,12 @@
 """Tests for MassiveDataSource (mocked)."""
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.market.cache import PriceCache
+from app.market.interface import PricingUnavailableError, UnknownSymbolError
 from app.market.massive_client import MassiveDataSource
 
 
@@ -199,3 +201,108 @@ class TestMassiveDataSource:
         assert cache.get_price("AAPL") == 190.50
 
         await source.stop()
+
+    async def test_ensure_priced_returns_cached_when_tracked(self):
+        """A ticker already tracked and cached is returned without a fetch."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="test-key", price_cache=cache)
+        source._tickers = ["AAPL"]
+        cache.update("AAPL", 190.50)
+
+        with patch.object(source, "_fetch_one") as mock_fetch:
+            price = await source.ensure_priced("AAPL")
+
+        assert price == 190.50
+        mock_fetch.assert_not_called()
+
+    async def test_ensure_priced_fetches_when_not_tracked(self):
+        """An untracked symbol is fetched on demand and joins the polled set on success."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="test-key", price_cache=cache)
+        source._client = MagicMock()
+
+        snapshot = _make_snapshot("TSLA", 123.45, 1707580800000)
+
+        with patch.object(source, "_fetch_one", return_value=snapshot):
+            price = await source.ensure_priced("TSLA")
+
+        assert price == 123.45
+        assert cache.get_price("TSLA") == 123.45
+        assert "TSLA" in source.get_tickers()
+
+    async def test_ensure_priced_normalizes_symbol(self):
+        """Input is normalized before being sent to the API and joining the tracked set."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="test-key", price_cache=cache)
+        source._client = MagicMock()
+
+        snapshot = _make_snapshot("TSLA", 50.0, 1707580800000)
+
+        with patch.object(source, "_fetch_one", return_value=snapshot) as mock_fetch:
+            await source.ensure_priced("  tsla ")
+
+        mock_fetch.assert_called_once_with("TSLA")
+        assert "TSLA" in source.get_tickers()
+
+    async def test_ensure_priced_raises_when_source_not_started(self):
+        """Without a running client, pricing is transiently unavailable."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="test-key", price_cache=cache)
+
+        with pytest.raises(PricingUnavailableError):
+            await source.ensure_priced("AAPL")
+
+    async def test_ensure_priced_missing_trade_data_is_unknown_symbol(self):
+        """A snapshot with no last_trade price is treated as an unknown symbol."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="test-key", price_cache=cache)
+        source._client = MagicMock()
+
+        snapshot = MagicMock()
+        snapshot.last_trade = None
+
+        with patch.object(source, "_fetch_one", return_value=snapshot):
+            with pytest.raises(UnknownSymbolError):
+                await source.ensure_priced("ZZZZ")
+
+        # A failed lookup must leave no residue in the tracked set.
+        assert "ZZZZ" not in source.get_tickers()
+
+    async def test_ensure_priced_not_found_error_is_unknown_symbol(self):
+        """A 404-style error from the API maps to UnknownSymbolError, not transient."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="test-key", price_cache=cache)
+        source._client = MagicMock()
+
+        class NotFoundError(Exception):
+            status = 404
+
+        with patch.object(source, "_fetch_one", side_effect=NotFoundError("nope")):
+            with pytest.raises(UnknownSymbolError):
+                await source.ensure_priced("ZZZZ")
+
+        assert "ZZZZ" not in source.get_tickers()
+
+    async def test_ensure_priced_transient_error_is_pricing_unavailable(self):
+        """A generic/network error is treated as transient, not a permanent rejection."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="test-key", price_cache=cache)
+        source._client = MagicMock()
+
+        with patch.object(source, "_fetch_one", side_effect=Exception("network blip")):
+            with pytest.raises(PricingUnavailableError):
+                await source.ensure_priced("AAPL")
+
+    async def test_ensure_priced_timeout_is_pricing_unavailable(self):
+        """A fetch that exceeds the timeout is treated as transient."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="test-key", price_cache=cache)
+        source._client = MagicMock()
+
+        def _slow_fetch(symbol):
+            time.sleep(0.2)
+            return _make_snapshot(symbol, 1.0, 0)
+
+        with patch.object(source, "_fetch_one", side_effect=_slow_fetch):
+            with pytest.raises(PricingUnavailableError):
+                await source.ensure_priced("AAPL", timeout=0.01)
