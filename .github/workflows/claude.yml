@@ -17,16 +17,16 @@ jobs:
   claude:
     if: |
       (github.event_name == 'issue_comment' &&
-       contains(github.event.comment.body, '@claude')) ||
+        contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' &&
-       contains(github.event.comment.body, '@claude')) ||
+        contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' &&
-       contains(github.event.review.body, '@claude')) ||
+        contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' &&
-       (
-         contains(github.event.issue.body, '@claude') ||
-         contains(github.event.issue.title, '@claude')
-       ))
+        (
+          contains(github.event.issue.body, '@claude') ||
+          contains(github.event.issue.title, '@claude')
+        ))
 
     runs-on: ubuntu-latest
 
@@ -41,7 +41,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-        fetch-depth: 0
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -54,13 +54,13 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
-        additional_permissions: |
-          actions: read
+          additional_permissions: |
+            actions: read
 
-        trigger_phrase: "@claude"
+          trigger_phrase: "@claude"
 
-        branch_prefix: "claude/"
+          branch_prefix: "claude/"
 
-        claude_args: |
-          --max-turns 100
-          --allowedTools "Bash(uv sync:*),Bash(uv run pytest:*),Bash(uv run ruff:*)"
+          claude_args: |
+            --max-turns 100
+            --allowedTools "Bash(uv sync:*),Bash(uv run pytest:*),Bash(uv run ruff:*)"
