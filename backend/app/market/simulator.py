@@ -10,7 +10,7 @@ import random
 import numpy as np
 
 from .cache import PriceCache
-from .interface import MarketDataSource
+from .interface import MarketDataSource, PricingUnavailableError, UnknownSymbolError
 from .seed_prices import (
     CORRELATION_GROUPS,
     CROSS_GROUP_CORR,
@@ -21,6 +21,7 @@ from .seed_prices import (
     TICKER_PARAMS,
     TSLA_CORR,
 )
+from .symbols import is_simulated, normalize_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,13 @@ class GBMSimulator:
                 corr[i, j] = rho
                 corr[j, i] = rho
 
-        self._cholesky = np.linalg.cholesky(corr)
+        try:
+            self._cholesky = np.linalg.cholesky(corr)
+        except np.linalg.LinAlgError:
+            logger.warning(
+                "Correlation matrix not positive semi-definite; using independent draws"
+            )
+            self._cholesky = None
 
     @staticmethod
     def _pairwise_correlation(t1: str, t2: str) -> float:
@@ -240,22 +247,44 @@ class SimulatorDataSource(MarketDataSource):
         logger.info("Simulator stopped")
 
     async def add_ticker(self, ticker: str) -> None:
+        symbol = normalize_symbol(ticker)
         if self._sim:
-            self._sim.add_ticker(ticker)
+            self._sim.add_ticker(symbol)
             # Seed cache immediately so the ticker has a price right away
-            price = self._sim.get_price(ticker)
+            price = self._sim.get_price(symbol)
             if price is not None:
-                self._cache.update(ticker=ticker, price=price)
-            logger.info("Simulator: added ticker %s", ticker)
+                self._cache.update(ticker=symbol, price=price)
+            logger.info("Simulator: added ticker %s", symbol)
 
     async def remove_ticker(self, ticker: str) -> None:
+        symbol = normalize_symbol(ticker)
         if self._sim:
-            self._sim.remove_ticker(ticker)
-        self._cache.remove(ticker)
-        logger.info("Simulator: removed ticker %s", ticker)
+            self._sim.remove_ticker(symbol)
+        self._cache.remove(symbol)
+        logger.info("Simulator: removed ticker %s", symbol)
 
     def get_tickers(self) -> list[str]:
         return self._sim.get_tickers() if self._sim else []
+
+    async def ensure_priced(self, ticker: str, timeout: float = 5.0) -> float:
+        """Validate against the simulated universe, then seed a price synchronously.
+
+        The simulator is authoritative and instantaneous: if the symbol is in the
+        universe we can always produce a price, so `timeout` is unused here.
+        """
+        symbol = normalize_symbol(ticker)  # raises InvalidSymbolFormatError
+        if not is_simulated(symbol):
+            raise UnknownSymbolError(
+                f"{symbol} is not a symbol this simulated market trades"
+            )
+        cached = self._cache.get_price(symbol)
+        if cached is not None:
+            return cached
+        await self.add_ticker(symbol)  # seeds the cache synchronously
+        price = self._cache.get_price(symbol)
+        if price is None:  # only if start() was never called
+            raise PricingUnavailableError(f"Market data not running; cannot price {symbol}")
+        return price
 
     async def _run_loop(self) -> None:
         """Core loop: step the simulation, write to cache, sleep."""
