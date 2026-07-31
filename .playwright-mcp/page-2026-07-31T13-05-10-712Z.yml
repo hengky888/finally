@@ -1,0 +1,95 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: FinAlly
+      - generic [ref=e6]: Trading workstation
+    - generic [ref=e7]:
+      - generic [ref=e8]: Total value
+      - generic [ref=e9]: "0.00"
+    - generic [ref=e10]:
+      - generic [ref=e11]: Cash
+      - generic [ref=e12]: "0.00"
+    - generic [ref=e13]:
+      - generic [ref=e14]: Unrealized
+      - generic [ref=e15]: "+0.00"
+    - generic [ref=e16]:
+      - generic [ref=e17]: TICK 0
+      - generic "Reconnecting" [ref=e18]
+  - main [ref=e21]:
+    - generic [ref=e23]:
+      - generic [ref=e24]:
+        - heading "Watchlist" [level=2] [ref=e25]
+        - generic [ref=e26]: "0"
+      - paragraph [ref=e28]: No tickers watched. Add one below.
+      - generic [ref=e30]:
+        - textbox "Add ticker to watchlist" [ref=e31]:
+          - /placeholder: ADD SYMBOL
+        - button "Add" [ref=e32]
+    - generic [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - heading "Session chart" [level=2] [ref=e36]
+          - generic [ref=e37]: awaiting first tick
+        - generic [ref=e38]:
+          - generic [ref=e39]: "--"
+          - generic [ref=e40]: —
+          - generic [ref=e41]: since load
+        - generic [ref=e42]: No history yet. The series builds from the live stream as ticks arrive.
+      - generic [ref=e43]:
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - heading "Exposure" [level=2] [ref=e46]
+            - generic [ref=e47]: 0 held
+          - generic [ref=e48]: No positions. Open one from the trade bar.
+        - generic [ref=e49]:
+          - generic [ref=e50]:
+            - heading "Portfolio value" [level=2] [ref=e51]
+            - generic [ref=e52]: 0 pts
+          - generic [ref=e53]: No snapshots yet. Value is recorded every 30 seconds and after each trade.
+      - generic [ref=e55]:
+        - generic [ref=e56]:
+          - heading "Positions" [level=2] [ref=e57]
+          - generic [ref=e58]: "+0.00"
+        - generic [ref=e59]:
+          - table [ref=e60]:
+            - rowgroup [ref=e61]:
+              - row [ref=e62]:
+                - columnheader "Symbol" [ref=e63]
+                - columnheader "Qty" [ref=e64]
+                - columnheader "Avg cost" [ref=e65]
+                - columnheader "Last" [ref=e66]
+                - columnheader "Unrealized" [ref=e67]
+                - columnheader "Change" [ref=e68]
+            - rowgroup
+          - paragraph [ref=e69]: No open positions. Buy something from the trade bar below.
+    - complementary "AI assistant" [ref=e71]:
+      - generic [ref=e72]:
+        - heading "FinAlly assistant" [level=2] [ref=e73]
+        - button "Collapse assistant" [ref=e74]: Hide
+      - paragraph [ref=e76]: Ask about your positions, request analysis, or tell the assistant to trade. It executes orders and watchlist changes directly.
+      - generic [ref=e78]:
+        - textbox "Message the assistant" [ref=e79]:
+          - /placeholder: Ask or instruct
+        - button "Send" [ref=e80]
+  - generic [ref=e81]:
+    - generic [ref=e82]: Order
+    - textbox "Ticker" [ref=e83]:
+      - /placeholder: SYMBOL
+    - textbox "Quantity" [ref=e84]:
+      - /placeholder: QTY
+    - button "Buy" [ref=e85]
+    - button "Sell" [ref=e86]
+    - generic [ref=e87]:
+      - generic [ref=e88]:
+        - term [ref=e89]: Last
+        - definition [ref=e90]: "--"
+      - generic [ref=e91]:
+        - term [ref=e92]: Est
+        - definition [ref=e93]: "--"
+      - generic [ref=e94]:
+        - term [ref=e95]: Held
+        - definition [ref=e96]: "0"
+      - generic [ref=e97]:
+        - term [ref=e98]: Cash
+        - definition [ref=e99]: "0.00"
+    - paragraph
