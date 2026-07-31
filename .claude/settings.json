@@ -12,6 +12,7 @@
     ]
   },
   "enabledPlugins": {
-    "independent-reviewer@heng-tools": true
+    "independent-reviewer@heng-tools": true,
+    "playwright@claude-plugins-official": true
   }
 }
