@@ -213,10 +213,16 @@ node_modules/
 .next/
 frontend/out/
 
-# SQLite database (runtime)
-db/finally.db
-db/finally.db-journal
-db/finally.db-wal
+# Claude Code
+#  Machine-local permissions and filesystem paths. Shared settings belong in
+#  .claude/settings.json, which is tracked.
+.claude/settings.local.json
+
+# SQLite runtime database (the db/ directory itself is tracked via .gitkeep)
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
 
 # Docker
 backend/static/

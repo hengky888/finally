@@ -1,95 +1,111 @@
-"""FastAPI application for FinAlly."""
+"""FastAPI application: lifespan, routes and static frontend serving."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.db import get_cash_balance, get_positions, get_watchlist, init_db, insert_snapshot
+from app.api import health_router, portfolio_router, watchlist_router
+from app.config import Settings, get_settings
+from app.db import get_connection, init_db
+from app.llm import chat_router
 from app.market import PriceCache, create_market_data_source, create_stream_router
-from app.routes import chat, portfolio, watchlist
+from app.services import TradeError, portfolio
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
-
-# Module-level PriceCache — shared between SSE router and the rest of the app
-price_cache = PriceCache()
-
-
-async def _snapshot_loop(cache: PriceCache):
-    """Background task: record portfolio snapshot every 30 seconds."""
-    while True:
-        await asyncio.sleep(30)
-        try:
-            cash = await get_cash_balance()
-            positions = await get_positions()
-            total_value = cash
-            for pos in positions:
-                price = cache.get_price(pos["ticker"]) or pos["avg_cost"]
-                total_value += price * pos["quantity"]
-            await insert_snapshot(round(total_value, 2))
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Error recording portfolio snapshot")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup/shutdown lifecycle."""
-    await init_db()
+    """Initialize the database, then start the market and snapshot tasks."""
+    settings: Settings = app.state.settings
+    init_db(settings.db_path)
+    logger.info("Database ready at %s", settings.db_path)
 
-    source = create_market_data_source(price_cache)
+    conn = get_connection()
+    try:
+        tickers = portfolio.priced_tickers(conn)
+    finally:
+        conn.close()
 
-    app.state.price_cache = price_cache
+    source = create_market_data_source(app.state.price_cache)
+    await source.start(tickers)
     app.state.market_source = source
 
-    # Start market data with watchlist tickers
-    wl = await get_watchlist()
-    tickers = [entry["ticker"] for entry in wl]
-    await source.start(tickers)
-    logger.info("Market data source started with %d tickers", len(tickers))
-
-    # Start snapshot background task
-    snapshot_task = asyncio.create_task(_snapshot_loop(price_cache))
-
-    # Record initial snapshot
-    cash = await get_cash_balance()
-    await insert_snapshot(round(cash, 2))
+    app.state.snapshot_task = asyncio.create_task(
+        _snapshot_loop(app.state.price_cache, settings.snapshot_interval),
+        name="portfolio-snapshots",
+    )
+    logger.info("Started market data for %d tickers", len(tickers))
 
     yield
 
-    # Shutdown
-    snapshot_task.cancel()
+    app.state.snapshot_task.cancel()
     try:
-        await snapshot_task
+        await app.state.snapshot_task
     except asyncio.CancelledError:
         pass
-
     await source.stop()
-    logger.info("Market data source stopped")
+    logger.info("Background tasks stopped")
 
 
-app = FastAPI(title="FinAlly", lifespan=lifespan)
-
-# API routes
-app.include_router(portfolio.router)
-app.include_router(watchlist.router)
-app.include_router(chat.router)
-
-# SSE streaming — uses the module-level price_cache
-stream_router = create_stream_router(price_cache)
-app.include_router(stream_router)
-
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}
+async def _snapshot_loop(cache: PriceCache, interval: float) -> None:
+    """Record the portfolio's total value every `interval` seconds."""
+    while True:
+        await asyncio.sleep(interval)
+        conn = get_connection()
+        try:
+            portfolio.record_snapshot(conn, cache)
+        except Exception:
+            logger.exception("Snapshot failed")
+        finally:
+            conn.close()
 
 
-# Static files serving (frontend) — mount last so API routes take priority
-_static_dir = Path(__file__).parent.parent / "static"
-if _static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")
+async def trade_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Render a rejection as a 400 the UI can display verbatim."""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+def create_app() -> FastAPI:
+    """Build the application with its routes and static file mount."""
+    settings = get_settings()
+    app = FastAPI(title="FinAlly", version="0.1.0", lifespan=lifespan)
+    app.state.settings = settings
+    app.state.price_cache = PriceCache()
+
+    app.add_exception_handler(TradeError, trade_error_handler)
+
+    app.include_router(health_router)
+    app.include_router(portfolio_router)
+    app.include_router(watchlist_router)
+    app.include_router(chat_router)
+    app.include_router(create_stream_router(app.state.price_cache))
+
+    # Static must be mounted last: it matches every path, so a router added
+    # after it is unreachable once the frontend export is present.
+    _mount_static(app, settings)
+    return app
+
+
+def _mount_static(app: FastAPI, settings: Settings) -> None:
+    """Serve the frontend export at / when it is present.
+
+    Mounted after the API routers, which are matched first. The frontend is
+    built separately and is absent in development, which must not stop the
+    server booting.
+    """
+    if not settings.static_dir.is_dir():
+        logger.info("No static directory at %s; serving API only", settings.static_dir)
+        return
+    app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="static")
+    logger.info("Serving frontend from %s", settings.static_dir)
+
+
+app = create_app()

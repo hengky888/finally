@@ -1,0 +1,148 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Terminal surfaces — layered dark, never pure black */
+  --color-void: #0d1117;
+  --color-panel: #12161f;
+  --color-raise: #1a1a2e;
+  --color-line: #242b38;
+  --color-hair: #1b212c;
+
+  /* Ink */
+  --color-ink: #d7dee9;
+  --color-muted: #7c8798;
+  --color-dim: #4d5769;
+
+  /* Brand */
+  --color-accent: #ecad0a;
+  --color-primary: #209dd7;
+  --color-violet: #753991;
+  --color-violet-lit: #b07ad2;
+
+  /* Market direction */
+  --color-up: #22c78a;
+  --color-down: #f04a4a;
+
+  --font-display: var(--font-plex-condensed), 'Arial Narrow', sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-void);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numerals never reflow: every price column is a fixed grid of digits. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Condensed uppercase is the instrument-label voice of the terminal. */
+.label {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  font-weight: 600;
+}
+
+.panel {
+  background-color: var(--color-panel);
+  border: 1px solid var(--color-hair);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 0.625rem;
+  border-bottom: 1px solid var(--color-hair);
+  background-color: color-mix(in srgb, var(--color-raise) 45%, transparent);
+  flex: none;
+}
+
+/* Signature: only the digits that actually moved are tinted, and the tint
+   decays over ~500ms. Flat ticks never mount this class, so a quiet market
+   stays visually still. */
+@keyframes tick-up {
+  from {
+    background-color: color-mix(in srgb, var(--color-up) 38%, transparent);
+    color: var(--color-up);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes tick-down {
+  from {
+    background-color: color-mix(in srgb, var(--color-down) 38%, transparent);
+    color: var(--color-down);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.tick-up {
+  animation: tick-up 520ms ease-out;
+}
+
+.tick-down {
+  animation: tick-down 520ms ease-out;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.28;
+  }
+}
+
+.pulse {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+}
+
+:focus-visible {
+  outline: 1px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tick-up,
+  .tick-down,
+  .pulse {
+    animation: none;
+  }
+}

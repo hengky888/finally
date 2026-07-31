@@ -1,70 +1,36 @@
-"""Database connection management with lazy initialization."""
+"""SQLite connection handling.
 
-import os
-import uuid
-from datetime import datetime, timezone
+Connections are cheap: open one per unit of work and close it. A single
+connection is not safe to share across threads.
 
-import aiosqlite
+Accessors never commit. Wrap a unit of work in `with conn:` and sqlite3
+commits it on success, rolls it back on an exception.
+"""
 
-from .schema import DEFAULT_CASH_BALANCE, DEFAULT_TICKERS, DEFAULT_USER_ID, SCHEMA_SQL
+import sqlite3
 
-_DB_PATH: str | None = None
+DEFAULT_DB_PATH = "db/finally.db"
 
-
-def get_db_path() -> str:
-    """Return the configured database path."""
-    global _DB_PATH
-    if _DB_PATH is None:
-        _DB_PATH = os.environ.get(
-            "FINALLY_DB_PATH",
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "db", "finally.db"),
-        )
-    return _DB_PATH
+_db_path = DEFAULT_DB_PATH
 
 
 def set_db_path(path: str) -> None:
-    """Override the database path (for testing)."""
-    global _DB_PATH
-    _DB_PATH = path
+    """Point subsequent connections at path."""
+    global _db_path
+    _db_path = str(path)
 
 
-async def get_connection() -> aiosqlite.Connection:
-    """Open a connection to the database."""
-    db = await aiosqlite.connect(get_db_path())
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA foreign_keys=ON")
-    return db
+def get_db_path() -> str:
+    """Path the next connection will open."""
+    return _db_path
 
 
-async def init_db() -> None:
-    """Create tables and seed default data if needed."""
-    db = await get_connection()
-    try:
-        await db.executescript(SCHEMA_SQL)
+def get_connection() -> sqlite3.Connection:
+    """Open a connection to the configured database, rows as sqlite3.Row.
 
-        # Check if default user exists
-        cursor = await db.execute(
-            "SELECT id FROM users_profile WHERE id = ?", (DEFAULT_USER_ID,)
-        )
-        user = await cursor.fetchone()
-
-        if user is None:
-            now = datetime.now(timezone.utc).isoformat()
-
-            # Create default user
-            await db.execute(
-                "INSERT INTO users_profile (id, cash_balance, created_at) VALUES (?, ?, ?)",
-                (DEFAULT_USER_ID, DEFAULT_CASH_BALANCE, now),
-            )
-
-            # Seed default watchlist
-            for ticker in DEFAULT_TICKERS:
-                await db.execute(
-                    "INSERT INTO watchlist (id, user_id, ticker, added_at) VALUES (?, ?, ?, ?)",
-                    (str(uuid.uuid4()), DEFAULT_USER_ID, ticker, now),
-                )
-
-            await db.commit()
-    finally:
-        await db.close()
+    isolation_level="" keeps implicit transactions on, so `with conn:` is a
+    real commit/rollback boundary rather than a no-op.
+    """
+    conn = sqlite3.connect(_db_path, isolation_level="")
+    conn.row_factory = sqlite3.Row
+    return conn

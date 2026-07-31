@@ -11,14 +11,17 @@ dependencies = [
     "massive>=1.0.0",
     "rich>=13.0.0",
     "aiosqlite>=0.22.1",
-    "litellm>=1.81.10",
+    "litellm>=1.94.1",
+    "python-dotenv>=1.2.1",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.28.1",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
+    "pytest-mock>=3.15.1",
     "ruff>=0.7.0",
     "httpx>=0.28.1",
 ]

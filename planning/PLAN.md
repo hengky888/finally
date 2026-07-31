@@ -198,7 +198,7 @@ The backend initializes the database in a FastAPI **startup event** (not lazily 
 
 All tables include a `user_id` column defaulting to `"default"`. This is hardcoded for now (single-user) but enables future multi-user support without schema migration.
 
-**users_profile** — User state (cash balance)
+**user_profile** — User state (cash balance)
 - `id` TEXT PRIMARY KEY (default: `"default"`)
 - `cash_balance` REAL (default: `10000.0`)
 - `created_at` TEXT (ISO timestamp)
@@ -507,6 +507,6 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - **Capping `portfolio_snapshots` growth / retention.** Left unbounded; fine for a demo-lifetime container.
 - **Mandating SQLite WAL mode.** Not required at this write volume; left to the backend's discretion.
 
-### Open nit (your call before the schema is frozen)
+### Resolved — schema frozen
 
-- **Table name `users_profile`** is plural for a single-row table; `user_profile` reads better. Renaming later is a migration, so decide now. Left unchanged pending your decision.
+- **Table name is `user_profile`** (singular). Decided 2026-07-31 before any DB code was written; §7 reflects it. The plural `users_profile` from earlier drafts is dead — do not use it.

@@ -1,67 +1,62 @@
-"""Mock LLM responses for testing (LLM_MOCK=true)."""
+"""Deterministic canned responses for LLM_MOCK=true.
+
+The mock returns the same JSON string the live model would, so parsing,
+auto-execution and persistence all run through exactly one code path. A mock
+reply can therefore place a real trade, which is what the E2E suite relies on.
+"""
+
+from __future__ import annotations
 
 import re
 
-from .models import LlmResponse, TradeAction, WatchlistChange
+from .schema import AssistantResponse, TradeInstruction, WatchlistInstruction
+
+TICKER = re.compile(r"\b[A-Z]{2,5}\b")
+NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+ANALYSIS = (
+    "Mock analysis: your positions and cash are shown in the portfolio panel. "
+    "Ask me to buy or sell a ticker, or to add one to your watchlist."
+)
 
 
-def mock_chat(user_message: str, context: dict) -> LlmResponse:
-    """Return deterministic responses based on simple keyword matching."""
-    msg = user_message.lower().strip()
+def mock_completion(messages: list[dict]) -> str:
+    """Answer the last message in the list with a canned structured reply."""
+    return _response_for(messages[-1]["content"]).model_dump_json()
 
-    # Buy request: "buy 10 AAPL" or "buy 5 shares of MSFT"
-    buy_match = re.search(r"buy\s+(\d+)\s+(?:shares?\s+(?:of\s+)?)?(\w+)", msg)
-    if buy_match:
-        qty = float(buy_match.group(1))
-        ticker = buy_match.group(2).upper()
-        return LlmResponse(
-            message=f"Executing purchase of {int(qty)} shares of {ticker}.",
-            trades=[TradeAction(ticker=ticker, side="buy", quantity=qty)],
+
+def _response_for(text: str) -> AssistantResponse:
+    """Map the user's wording onto a fixed reply. Same input, same output."""
+    lower = text.lower()
+    ticker = _first_ticker(text)
+    if ticker is None:
+        return AssistantResponse(message=ANALYSIS)
+
+    if "sell" in lower or "buy" in lower:
+        side = "sell" if "sell" in lower else "buy"
+        quantity = _first_number(text)
+        return AssistantResponse(
+            message=f"Executing a {side} of {quantity:g} {ticker}.",
+            trades=[TradeInstruction(ticker=ticker, side=side, quantity=quantity)],
         )
 
-    # Sell request: "sell 10 AAPL" or "sell 5 shares of MSFT"
-    sell_match = re.search(r"sell\s+(\d+)\s+(?:shares?\s+(?:of\s+)?)?(\w+)", msg)
-    if sell_match:
-        qty = float(sell_match.group(1))
-        ticker = sell_match.group(2).upper()
-        return LlmResponse(
-            message=f"Executing sale of {int(qty)} shares of {ticker}.",
-            trades=[TradeAction(ticker=ticker, side="sell", quantity=qty)],
+    if "watchlist" in lower or "watch" in lower:
+        action = "remove" if "remove" in lower or "drop" in lower else "add"
+        return AssistantResponse(
+            message=f"{action.capitalize()}ing {ticker} on your watchlist.",
+            watchlist_changes=[WatchlistInstruction(ticker=ticker, action=action)],
         )
 
-    # Add to watchlist: "watch PYPL" or "add PYPL to watchlist"
-    watch_match = re.search(r"(?:watch|add)\s+(\w+)", msg)
-    if watch_match and "watchlist" in msg or msg.startswith("watch "):
-        ticker = watch_match.group(1).upper()
-        return LlmResponse(
-            message=f"Adding {ticker} to your watchlist.",
-            watchlist_changes=[WatchlistChange(ticker=ticker, action="add")],
-        )
+    return AssistantResponse(message=f"{ANALYSIS} You mentioned {ticker}.")
 
-    # Portfolio analysis
-    if any(kw in msg for kw in ["portfolio", "positions", "holdings", "analysis"]):
-        cash = context.get("cash", 0)
-        positions = context.get("positions", [])
-        total_value = context.get("total_value", cash)
-        if positions:
-            tickers = ", ".join(p["ticker"] for p in positions)
-            return LlmResponse(
-                message=(
-                    f"Your portfolio is worth ${total_value:,.2f} with "
-                    f"${cash:,.2f} in cash. You hold: {tickers}."
-                ),
-            )
-        return LlmResponse(
-            message=(
-                f"You have ${cash:,.2f} in cash and no open positions. "
-                "Consider starting with a diversified set of holdings."
-            ),
-        )
 
-    # Default greeting / fallback
-    return LlmResponse(
-        message=(
-            "I'm FinAlly, your AI trading assistant. I can analyze your portfolio, "
-            "execute trades, and manage your watchlist. How can I help?"
-        ),
-    )
+def _first_ticker(text: str) -> str | None:
+    """The first uppercase word that looks like a symbol."""
+    match = TICKER.search(text)
+    return match.group(0) if match else None
+
+
+def _first_number(text: str) -> float:
+    """The first number in the message; one share when none is given."""
+    match = NUMBER.search(text)
+    return float(match.group(0)) if match else 1.0

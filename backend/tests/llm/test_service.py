@@ -1,151 +1,135 @@
-"""Tests for the LLM service (mock mode) and action execution."""
+"""The whole chat flow, with the LiteLLM call replaced by a canned reply."""
 
+import json
+from types import SimpleNamespace
 
 import pytest
 
-from app.db import (
-    get_cash_balance,
-    get_position,
-    get_watchlist,
-    init_db,
-    set_db_path,
-    upsert_position,
-)
-from app.llm.models import LlmResponse, TradeAction, WatchlistChange
-from app.llm.service import _build_context, _execute_actions, chat_with_llm
-from app.market import PriceCache
+from app.db import chat, positions
+from app.llm.client import MISSING_KEY
+from app.llm.errors import LLMError
+from app.llm.service import handle_chat
+from tests.llm.conftest import make_settings
+
+
+def fake_completion(mocker, content):
+    """Stand in for litellm.completion, returning `content` as the reply body."""
+    reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+    return mocker.patch("app.llm.client.completion", return_value=reply)
 
 
 @pytest.fixture
-async def test_db(tmp_path):
-    db_path = str(tmp_path / "test.db")
-    set_db_path(db_path)
-    await init_db()
-    yield db_path
-    set_db_path(str(tmp_path / "unused.db"))
+def live_settings():
+    return make_settings(llm_mock=False)
 
 
-@pytest.fixture
-def price_cache():
-    cache = PriceCache()
-    cache.update("AAPL", 190.50)
-    cache.update("GOOGL", 175.25)
-    cache.update("MSFT", 420.00)
-    cache.update("AMZN", 185.00)
-    cache.update("TSLA", 250.00)
-    cache.update("NVDA", 880.00)
-    cache.update("META", 500.00)
-    cache.update("JPM", 195.00)
-    cache.update("V", 280.00)
-    cache.update("NFLX", 620.00)
-    return cache
+async def test_live_flow_executes_and_persists(conn, cache, source, live_settings, mocker):
+    called = fake_completion(
+        mocker,
+        json.dumps(
+            {
+                "message": "Buying 5 AAPL.",
+                "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 5}],
+            }
+        ),
+    )
+    result = await handle_chat(conn, cache, source, live_settings, "buy 5 AAPL")
+
+    assert result["message"] == "Buying 5 AAPL."
+    assert result["actions"]["trades"][0]["price"] == 100.0
+    assert positions.get(conn, "AAPL")["quantity"] == 5.0
+
+    history = chat.list_recent(conn)
+    assert [(m["role"], m["content"]) for m in history] == [
+        ("user", "buy 5 AAPL"),
+        ("assistant", "Buying 5 AAPL."),
+    ]
+    assert history[1]["actions"] == result["actions"]
+    assert called.call_count == 1
 
 
-class TestBuildContext:
-    async def test_builds_context_with_defaults(self, test_db, price_cache):
-        ctx = await _build_context(price_cache)
-        assert ctx["cash"] == 10000.0
-        assert ctx["positions"] == []
-        assert len(ctx["watchlist"]) == 10
-        assert ctx["total_value"] == 10000.0
+async def test_prompt_carries_the_model_and_provider(conn, cache, source, live_settings, mocker):
+    called = fake_completion(mocker, '{"message": "hi"}')
+    await handle_chat(conn, cache, source, live_settings, "hello")
 
-    async def test_context_with_position(self, test_db, price_cache):
-        await upsert_position("AAPL", 10, 180.0)
-        ctx = await _build_context(price_cache)
-        assert len(ctx["positions"]) == 1
-        pos = ctx["positions"][0]
-        assert pos["ticker"] == "AAPL"
-        assert pos["quantity"] == 10
-        assert pos["current_price"] == 190.50
-        assert pos["unrealized_pnl"] == 105.0  # (190.50 - 180) * 10
+    kwargs = called.call_args.kwargs
+    assert kwargs["model"] == "openrouter/openai/gpt-oss-120b"
+    assert kwargs["extra_body"] == {"provider": {"order": ["cerebras"]}}
+    assert kwargs["messages"][0]["content"].startswith("You are FinAlly")
+    assert "Cash: $10,000.00" in kwargs["messages"][1]["content"]
+    assert kwargs["messages"][-1] == {"role": "user", "content": "hello"}
 
 
-class TestExecuteActions:
-    async def test_execute_buy(self, test_db, price_cache):
-        resp = LlmResponse(
-            message="Buying",
-            trades=[TradeAction(ticker="AAPL", side="buy", quantity=5)],
-        )
-        results = await _execute_actions(resp, price_cache)
-        assert results["trades"][0]["status"] == "executed"
-        assert results["trades"][0]["price"] == 190.50
+async def test_history_is_replayed_to_the_model(conn, cache, source, live_settings, mocker):
+    with conn:
+        chat.append(conn, "user", "what do i hold?")
+        chat.append(conn, "assistant", "Nothing yet.")
+    called = fake_completion(mocker, '{"message": "Still nothing."}')
 
-        cash = await get_cash_balance()
-        assert cash == pytest.approx(10000 - 190.50 * 5)
+    await handle_chat(conn, cache, source, live_settings, "and now?")
 
-        pos = await get_position("AAPL")
-        assert pos["quantity"] == 5
-
-    async def test_execute_sell_insufficient_shares(self, test_db, price_cache):
-        resp = LlmResponse(
-            message="Selling",
-            trades=[TradeAction(ticker="AAPL", side="sell", quantity=5)],
-        )
-        results = await _execute_actions(resp, price_cache)
-        assert "error" in results["trades"][0]
-        assert "Insufficient shares" in results["trades"][0]["error"]
-
-    async def test_execute_buy_insufficient_cash(self, test_db, price_cache):
-        resp = LlmResponse(
-            message="Buying",
-            trades=[TradeAction(ticker="NVDA", side="buy", quantity=100)],
-        )
-        results = await _execute_actions(resp, price_cache)
-        assert "error" in results["trades"][0]
-        assert "Insufficient cash" in results["trades"][0]["error"]
-
-    async def test_execute_watchlist_add(self, test_db, price_cache):
-        resp = LlmResponse(
-            message="Adding",
-            watchlist_changes=[WatchlistChange(ticker="PYPL", action="add")],
-        )
-        results = await _execute_actions(resp, price_cache)
-        assert results["watchlist_changes"][0]["status"] == "done"
-
-        wl = await get_watchlist()
-        tickers = [w["ticker"] for w in wl]
-        assert "PYPL" in tickers
-
-    async def test_execute_watchlist_remove(self, test_db, price_cache):
-        resp = LlmResponse(
-            message="Removing",
-            watchlist_changes=[WatchlistChange(ticker="AAPL", action="remove")],
-        )
-        results = await _execute_actions(resp, price_cache)
-        assert results["watchlist_changes"][0]["status"] == "done"
-
-        wl = await get_watchlist()
-        tickers = [w["ticker"] for w in wl]
-        assert "AAPL" not in tickers
-
-    async def test_no_price_available(self, test_db, price_cache):
-        resp = LlmResponse(
-            message="Buying",
-            trades=[TradeAction(ticker="ZZZZ", side="buy", quantity=1)],
-        )
-        results = await _execute_actions(resp, price_cache)
-        assert "error" in results["trades"][0]
-        assert "No price" in results["trades"][0]["error"]
+    assert called.call_args.kwargs["messages"][2:] == [
+        {"role": "user", "content": "what do i hold?"},
+        {"role": "assistant", "content": "Nothing yet."},
+        {"role": "user", "content": "and now?"},
+    ]
 
 
-class TestChatWithLlmMock:
-    @pytest.fixture(autouse=True)
-    def set_mock_mode(self, monkeypatch):
-        monkeypatch.setenv("LLM_MOCK", "true")
+async def test_recorded_actions_omit_the_rejected_trade(
+    conn, cache, source, live_settings, mocker
+):
+    fake_completion(
+        mocker,
+        json.dumps(
+            {
+                "message": "Rebalancing.",
+                "trades": [
+                    {"ticker": "AAPL", "side": "buy", "quantity": 10},
+                    {"ticker": "MSFT", "side": "buy", "quantity": 900},
+                ],
+            }
+        ),
+    )
+    result = await handle_chat(conn, cache, source, live_settings, "rebalance me")
 
-    async def test_greeting(self, test_db, price_cache):
-        result = await chat_with_llm("hello", price_cache)
-        assert "FinAlly" in result["message"]
-        assert result["trades"] == []
+    assert [t["ticker"] for t in result["actions"]["trades"]] == ["AAPL"]
+    assert len(result["actions"]["errors"]) == 1
+    stored = chat.list_recent(conn)[-1]["actions"]
+    assert stored == result["actions"]
 
-    async def test_buy_executes(self, test_db, price_cache):
-        result = await chat_with_llm("buy 5 AAPL", price_cache)
-        assert len(result["trades"]) == 1
-        assert result["trades"][0]["status"] == "executed"
 
-        pos = await get_position("AAPL")
-        assert pos["quantity"] == 5
+async def test_malformed_reply_is_a_handled_error(conn, cache, source, live_settings, mocker):
+    fake_completion(mocker, "sorry, I cannot do JSON")
+    with pytest.raises(LLMError):
+        await handle_chat(conn, cache, source, live_settings, "hello")
+    assert chat.list_recent(conn) == []
 
-    async def test_portfolio_analysis(self, test_db, price_cache):
-        result = await chat_with_llm("show my portfolio", price_cache)
-        assert "10,000.00" in result["message"]
+
+async def test_missing_api_key_fails_the_call_only(conn, cache, source, mocker):
+    called = fake_completion(mocker, '{"message": "hi"}')
+    settings = make_settings(llm_mock=False, openrouter_api_key="")
+
+    with pytest.raises(LLMError) as raised:
+        await handle_chat(conn, cache, source, settings, "hello")
+
+    assert str(raised.value) == MISSING_KEY
+    called.assert_not_called()
+
+
+async def test_upstream_failure_is_a_handled_error(conn, cache, source, live_settings, mocker):
+    mocker.patch("app.llm.client.completion", side_effect=RuntimeError("connection reset"))
+    with pytest.raises(LLMError) as raised:
+        await handle_chat(conn, cache, source, live_settings, "hello")
+    assert "connection reset" in str(raised.value)
+
+
+async def test_mock_mode_drives_a_real_trade(conn, cache, source, mock_settings, mocker):
+    called = mocker.patch("app.llm.client.completion")
+    result = await handle_chat(conn, cache, source, mock_settings, "buy 4 TSLA")
+
+    called.assert_not_called()
+    assert result["actions"]["trades"] == [
+        {"ticker": "TSLA", "side": "buy", "quantity": 4.0, "price": 50.0}
+    ]
+    assert positions.get(conn, "TSLA")["quantity"] == 4.0
+    assert chat.list_recent(conn)[-1]["actions"] == result["actions"]

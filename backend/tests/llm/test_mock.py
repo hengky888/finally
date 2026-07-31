@@ -1,58 +1,48 @@
-"""Tests for the mock LLM module."""
+"""Mock mode: no network call, and the same reply every time."""
 
-from app.llm.mock import mock_chat
+from app.llm.client import complete
+from app.llm.mock import mock_completion
+from app.llm.schema import AssistantResponse
 
 
-class TestMockChat:
-    def test_greeting(self):
-        result = mock_chat("hello", {})
-        assert "FinAlly" in result.message
-        assert result.trades == []
-        assert result.watchlist_changes == []
+def _reply(text: str) -> AssistantResponse:
+    return AssistantResponse.model_validate_json(mock_completion([{"role": "user", "content": text}]))
 
-    def test_buy_request(self):
-        result = mock_chat("buy 10 AAPL", {})
-        assert len(result.trades) == 1
-        assert result.trades[0].ticker == "AAPL"
-        assert result.trades[0].side == "buy"
-        assert result.trades[0].quantity == 10
 
-    def test_buy_shares_of(self):
-        result = mock_chat("buy 5 shares of MSFT", {})
-        assert len(result.trades) == 1
-        assert result.trades[0].ticker == "MSFT"
-        assert result.trades[0].quantity == 5
+def test_buy_request_produces_a_trade():
+    reply = _reply("buy 10 AAPL please")
+    assert [(t.ticker, t.side, t.quantity) for t in reply.trades] == [("AAPL", "buy", 10.0)]
 
-    def test_sell_request(self):
-        result = mock_chat("sell 3 GOOGL", {})
-        assert len(result.trades) == 1
-        assert result.trades[0].ticker == "GOOGL"
-        assert result.trades[0].side == "sell"
-        assert result.trades[0].quantity == 3
 
-    def test_portfolio_analysis_no_positions(self):
-        context = {"cash": 10000.0, "positions": [], "total_value": 10000.0}
-        result = mock_chat("show my portfolio", context)
-        assert "10,000.00" in result.message
-        assert result.trades == []
+def test_sell_request_produces_a_sell():
+    reply = _reply("sell 3 MSFT")
+    assert [(t.ticker, t.side, t.quantity) for t in reply.trades] == [("MSFT", "sell", 3.0)]
 
-    def test_portfolio_analysis_with_positions(self):
-        context = {
-            "cash": 5000.0,
-            "positions": [{"ticker": "AAPL"}, {"ticker": "MSFT"}],
-            "total_value": 8000.0,
-        }
-        result = mock_chat("analyze my portfolio", context)
-        assert "8,000.00" in result.message
-        assert "AAPL" in result.message
 
-    def test_watch_ticker(self):
-        result = mock_chat("watch PYPL", {})
-        assert len(result.watchlist_changes) == 1
-        assert result.watchlist_changes[0].ticker == "PYPL"
-        assert result.watchlist_changes[0].action == "add"
+def test_quantity_defaults_to_one_share():
+    assert _reply("buy TSLA").trades[0].quantity == 1.0
 
-    def test_add_to_watchlist(self):
-        result = mock_chat("add TSLA to my watchlist", {})
-        assert len(result.watchlist_changes) == 1
-        assert result.watchlist_changes[0].ticker == "TSLA"
+
+def test_watchlist_add_and_remove():
+    assert _reply("add PYPL to my watchlist").watchlist_changes[0].action == "add"
+    assert _reply("remove PYPL from my watchlist").watchlist_changes[0].action == "remove"
+
+
+def test_plain_question_asks_for_nothing():
+    reply = _reply("how am i doing today?")
+    assert reply.trades == []
+    assert reply.watchlist_changes == []
+    assert reply.message
+
+
+def test_the_same_message_always_gives_the_same_reply():
+    assert mock_completion([{"role": "user", "content": "buy 10 AAPL"}]) == mock_completion(
+        [{"role": "user", "content": "buy 10 AAPL"}]
+    )
+
+
+async def test_mock_mode_never_calls_litellm(mock_settings, mocker):
+    called = mocker.patch("app.llm.client.completion")
+    raw = await complete([{"role": "user", "content": "buy 2 AAPL"}], mock_settings)
+    called.assert_not_called()
+    assert AssistantResponse.model_validate_json(raw).trades[0].ticker == "AAPL"
