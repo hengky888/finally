@@ -1,18 +1,44 @@
-frontend/node_modules
-frontend/out
-frontend/.next
+# Virtualenvs and installed dependencies. A Windows .venv or a host
+# node_modules copied into a Linux image is broken and enormous.
 backend/.venv
-backend/__pycache__
+frontend/node_modules
+
+# Build output: both stages rebuild these from source.
+frontend/.next
+frontend/out
 backend/static
-db/finally.db
-db/finally.db-journal
-db/finally.db-wal
+
+# Version control and CI
 .git
-.env
-*.pyc
-__pycache__
-.claude
-planning
-test
-.ruff_cache
+.github
+.gitignore
+
+# Python caches
+**/__pycache__
+**/*.pyc
 .pytest_cache
+.ruff_cache
+.mypy_cache
+**/.coverage
+**/htmlcov
+
+# Local runtime database. The container gets its own on the named volume.
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
+
+# Secrets. The container receives configuration via --env-file at run time.
+.env
+
+# Tests and docs that the runtime image does not need
+test
+planning
+independent-reviewer
+.agents
+.claude
+.claude-plugin
+.playwright-mcp
+*.md
+!backend/README.md
+*.png

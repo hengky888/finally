@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
+# Stop and remove the FinAlly container. The data volume is left intact.
 set -euo pipefail
 
-CONTAINER_NAME="finally_agents"
+CONTAINER=finally
 
-if docker ps -q -f name="$CONTAINER_NAME" | grep -q .; then
-    echo "Stopping FinAlly..."
-    docker stop "$CONTAINER_NAME" >/dev/null
-    docker rm "$CONTAINER_NAME" >/dev/null
-    echo "FinAlly stopped."
-elif docker ps -aq -f name="$CONTAINER_NAME" | grep -q .; then
-    echo "Removing stopped container..."
-    docker rm "$CONTAINER_NAME" >/dev/null
-    echo "Done."
-else
-    echo "FinAlly is not running."
+if [ -z "$(docker ps -aq -f name="^${CONTAINER}$")" ]; then
+  echo "Not running."
+  exit 0
 fi
+
+docker stop "$CONTAINER" >/dev/null 2>&1 || true
+docker rm "$CONTAINER" >/dev/null 2>&1 || true
+
+echo "Stopped. Data volume 'finally-data' kept."

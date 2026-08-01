@@ -1,13 +1,46 @@
+name: finally-e2e
+
 services:
-  app:
-    image: finally
-    ports:
-      - "8000:8000"
+  # Not named "app": Chromium HSTS-preloads the whole .app TLD, so a bare
+  # "app" hostname is force-upgraded to https and every navigation fails
+  # with ERR_SSL_PROTOCOL_ERROR.
+  finally-app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     environment:
-      - LLM_MOCK=true
-      - OPENROUTER_API_KEY=test
+      # Deterministic assistant replies, and snapshots often enough that the
+      # P&L chart has points within a test run.
+      LLM_MOCK: "true"
+      SNAPSHOT_INTERVAL: "5"
+    # Deliberately no volume: every run starts from a pristine database, which
+    # the fresh-start spec asserts against.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:8000/api/health")
       interval: 2s
-      timeout: 5s
-      retries: 10
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  playwright:
+    # Browser dependencies live here, never in the production image.
+    image: mcr.microsoft.com/playwright:v1.62.1-noble
+    depends_on:
+      finally-app:
+        condition: service_healthy
+    environment:
+      BASE_URL: http://finally-app:8000
+      CI: "true"
+    working_dir: /e2e
+    volumes:
+      - .:/e2e
+      # Keep Linux node_modules out of the host checkout.
+      - e2e-node-modules:/e2e/node_modules
+    command: sh -c "npm ci && npx playwright test"
+
+volumes:
+  e2e-node-modules:

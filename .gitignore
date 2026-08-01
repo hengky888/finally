@@ -14,6 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
+# Anchored to the repo root: unanchored, these also matched frontend/src/lib/,
+# which is application source, not a Python build artifact.
 /lib/
 /lib64/
 parts/

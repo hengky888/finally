@@ -6,11 +6,11 @@ Built entirely by coding agents as the capstone project for an agentic AI coding
 
 ## Status
 
-The market data subsystem is complete (GBM simulator, Massive/Polygon.io client, price cache, SSE endpoint — 73 tests passing). Portfolio, LLM chat, frontend, and Docker packaging are still to be built.
+All components are built and green: market data, database, portfolio and watchlist services, the HTTP API, LLM chat, the Next.js frontend, Docker packaging, and the E2E suite. 283 backend tests, 125 frontend tests, 11 Playwright scenarios.
 
-See [planning/PLAN.md](planning/PLAN.md) for the full specification and [planning/market_data_summary.md](planning/market_data_summary.md) for what exists today.
+See [planning/PLAN.md](planning/PLAN.md) for the full specification and [planning/market_data_summary.md](planning/market_data_summary.md) for the market data subsystem.
 
-## Planned Features
+## Features
 
 - Live price streaming over SSE with green/red flash animations
 - Simulated portfolio — $10k virtual cash, market orders, instant fills
@@ -29,6 +29,21 @@ A single Docker container serving everything on port 8000:
 - **AI**: LiteLLM to OpenRouter (Cerebras inference) with structured outputs
 - **Market data**: built-in GBM simulator by default, Massive API when a key is set
 
+## Running the App
+
+```bash
+./scripts/start_mac.sh           # macOS/Linux; add --build to force a rebuild
+./scripts/stop_mac.sh
+```
+
+```powershell
+.\scripts\start_windows.ps1      # Windows; add -Build to force a rebuild
+.\scripts\stop_windows.ps1
+```
+
+Then open http://localhost:8000. The SQLite database lives on the `finally-data`
+volume and survives stop/start; the stop scripts never remove it.
+
 ## Running the Backend
 
 ```bash
@@ -37,6 +52,15 @@ uv sync --extra dev
 uv run market_data_demo.py       # live terminal price dashboard
 uv run --extra dev pytest        # test suite
 ```
+
+## Running the Tests
+
+```bash
+cd backend && uv run --extra dev pytest      # 283 backend tests
+cd frontend && npm test                      # 125 frontend tests
+```
+
+E2E: see [test/README.md](test/README.md).
 
 ## Environment Variables
 
@@ -52,12 +76,12 @@ Create a `.env` in the project root:
 
 ```
 finally/
-├── backend/     # FastAPI uv project (market data complete)
-├── frontend/    # Next.js static export (planned)
+├── backend/     # FastAPI uv project
+├── frontend/    # Next.js static export
 ├── planning/    # Specification and agent contracts
-├── test/        # Playwright E2E tests (planned)
+├── test/        # Playwright E2E tests
 ├── db/          # SQLite volume mount (runtime)
-└── scripts/     # Start/stop helpers (planned)
+└── scripts/     # Start/stop helpers
 ```
 
 ## License

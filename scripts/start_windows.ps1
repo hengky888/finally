@@ -1,54 +1,47 @@
-$ErrorActionPreference = "Stop"
+# Build (if needed) and start the FinAlly container. Safe to run repeatedly.
+param([switch]$Build)
 
-$ContainerName = "finally"
-$ImageName = "finally"
-$VolumeName = "finally-data"
-$Port = 8000
+$ErrorActionPreference = 'Stop'
 
-Set-Location (Split-Path $PSScriptRoot)
+$Image     = 'finally:latest'
+$Container = 'finally'
+$Volume    = 'finally-data'
+$Port      = 8000
 
-# Build if image doesn't exist or --build flag passed
-$shouldBuild = $args -contains "--build"
-if (-not $shouldBuild) {
-    $imageExists = docker image inspect $ImageName 2>$null
-    if (-not $imageExists) { $shouldBuild = $true }
-}
-if ($shouldBuild) {
-    Write-Host "Building Docker image..."
-    docker build -t $ImageName .
+function Invoke-DockerQuiet {
+    # In Windows PowerShell 5.1 a native command's stderr becomes a terminating
+    # NativeCommandError while $ErrorActionPreference is 'Stop'. These probes are
+    # expected to fail sometimes, so relax it for the call and read $LASTEXITCODE.
+    $ErrorActionPreference = 'Continue'
+    docker @args 2>$null | Out-Null
 }
 
-# Stop existing container if running
-$running = docker ps -q -f "name=$ContainerName"
-if ($running) {
-    Write-Host "Stopping existing container..."
-    docker stop $ContainerName | Out-Null
-    docker rm $ContainerName | Out-Null
+Set-Location (Join-Path $PSScriptRoot '..')
+
+Invoke-DockerQuiet image inspect $Image
+if ($Build -or $LASTEXITCODE -ne 0) {
+    Write-Host "Building $Image ..."
+    docker build -t $Image .
+    if ($LASTEXITCODE -ne 0) { throw 'Docker build failed.' }
 }
 
-# Remove stopped container with same name
-$stopped = docker ps -aq -f "name=$ContainerName"
-if ($stopped) {
-    docker rm $ContainerName | Out-Null
+if (docker ps -q -f "name=^$Container$") {
+    Write-Host "Already running at http://localhost:$Port"
+    exit 0
 }
 
-# Check for .env file
+# Remove a stopped container of the same name so the run below is idempotent.
+Invoke-DockerQuiet rm $Container
+
 $envArgs = @()
 if (Test-Path .env) {
-    $envArgs = @("--env-file", ".env")
+    $envArgs = @('--env-file', '.env')
+} else {
+    Write-Host 'No .env found; starting with defaults (simulator prices, chat needs a key).'
 }
 
-Write-Host "Starting FinAlly..."
-docker run -d `
-    --name $ContainerName `
-    -p "${Port}:8000" `
-    -v "${VolumeName}:/app/db" `
-    @envArgs `
-    $ImageName
+docker run -d --name $Container -v "${Volume}:/app/db" -p "${Port}:8000" @envArgs $Image | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Failed to start container.' }
 
-Write-Host ""
-Write-Host "FinAlly is running at http://localhost:$Port"
-Write-Host ""
-
-# Open browser
+Write-Host "FinAlly is starting at http://localhost:$Port"
 Start-Process "http://localhost:$Port"

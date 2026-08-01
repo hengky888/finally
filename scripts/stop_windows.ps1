@@ -1,20 +1,20 @@
-$ErrorActionPreference = "Stop"
+# Stop and remove the FinAlly container. The data volume is left intact.
+$ErrorActionPreference = 'Stop'
 
-$ContainerName = "finally"
+$Container = 'finally'
 
-$running = docker ps -q -f "name=$ContainerName"
-if ($running) {
-    Write-Host "Stopping FinAlly..."
-    docker stop $ContainerName | Out-Null
-    docker rm $ContainerName | Out-Null
-    Write-Host "FinAlly stopped."
-} else {
-    $stopped = docker ps -aq -f "name=$ContainerName"
-    if ($stopped) {
-        Write-Host "Removing stopped container..."
-        docker rm $ContainerName | Out-Null
-        Write-Host "Done."
-    } else {
-        Write-Host "FinAlly is not running."
-    }
+function Invoke-DockerQuiet {
+    # See start_windows.ps1: native stderr is terminating under 'Stop' in PS 5.1.
+    $ErrorActionPreference = 'Continue'
+    docker @args 2>$null | Out-Null
 }
+
+if (-not (docker ps -aq -f "name=^$Container$")) {
+    Write-Host 'Not running.'
+    exit 0
+}
+
+Invoke-DockerQuiet stop $Container
+Invoke-DockerQuiet rm $Container
+
+Write-Host "Stopped. Data volume 'finally-data' kept."
