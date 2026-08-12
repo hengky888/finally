@@ -7,6 +7,7 @@ from app.market.symbols import (
     InvalidSymbolFormatError,
     is_simulated,
     normalize_symbol,
+    reference_price,
 )
 
 
@@ -94,3 +95,41 @@ class TestIsSimulated:
     def test_universe_is_nonempty(self):
         """Sanity check that the universe was actually populated."""
         assert len(SIMULATED_UNIVERSE) > 10
+
+
+class TestReferencePrice:
+    """Unseeded universe symbols need a price that survives a restart."""
+
+    def test_seeded_symbol_uses_its_real_price(self):
+        from app.market.seed_prices import SEED_PRICES
+
+        assert reference_price("AAPL") == SEED_PRICES["AAPL"]
+
+    def test_unseeded_symbol_is_deterministic(self):
+        """Two calls -- and two process starts -- must agree."""
+        assert reference_price("AMD") == reference_price("AMD")
+
+    def test_unseeded_symbols_differ_from_each_other(self):
+        assert reference_price("AMD") != reference_price("INTC")
+
+    def test_price_is_in_a_plausible_range(self):
+        for symbol in ("AMD", "INTC", "SPY", "BRK.B", "COIN"):
+            assert 50.0 <= reference_price(symbol) <= 300.0
+
+    def test_not_dependent_on_pythonhashseed(self):
+        """hash() is salted per process; the fallback must not use it."""
+        import subprocess
+        import sys
+
+        script = "from app.market.symbols import reference_price; print(reference_price('AMD'))"
+        runs = {
+            subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                env={"PYTHONHASHSEED": seed, "PATH": ""},
+                cwd=".",
+            ).stdout.strip()
+            for seed in ("0", "1", "42")
+        }
+        assert len(runs) == 1

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.market.cache import PriceCache
+from app.market.models import PriceUpdate
 from app.market.stream import _diff, _generate_events, create_stream_router
 
 
@@ -33,42 +34,53 @@ def _parse(event: str) -> dict:
     return json.loads(event[len("data: ") :].strip())
 
 
+def _update(price: float, timestamp: float = 1234.0, reference: float | None = None) -> PriceUpdate:
+    """A PriceUpdate standing in for whatever the cache holds."""
+    return PriceUpdate(
+        ticker="AAPL",
+        price=price,
+        previous_price=price,
+        timestamp=timestamp,
+        reference_price=reference,
+    )
+
+
 class TestDiff:
     """Unit tests for the per-connection _diff payload builder."""
 
     def test_first_tick_is_flat(self):
         """With no prior price for this connection, the tick reports itself as the baseline."""
-        payload = _diff("AAPL", 190.0, None, 1234.0)
+        payload = _diff("AAPL", _update(190.0), None)
         assert payload["direction"] == "flat"
         assert payload["previous_price"] == 190.0
         assert payload["change"] == 0.0
 
     def test_direction_up(self):
-        payload = _diff("AAPL", 191.0, 190.0, 1234.0)
+        payload = _diff("AAPL", _update(191.0), 190.0)
         assert payload["direction"] == "up"
         assert payload["change"] == 1.0
 
     def test_direction_down(self):
-        payload = _diff("AAPL", 189.0, 190.0, 1234.0)
+        payload = _diff("AAPL", _update(189.0), 190.0)
         assert payload["direction"] == "down"
         assert payload["change"] == -1.0
 
     def test_direction_flat_when_unchanged(self):
-        payload = _diff("AAPL", 190.0, 190.0, 1234.0)
+        payload = _diff("AAPL", _update(190.0), 190.0)
         assert payload["direction"] == "flat"
         assert payload["change"] == 0.0
 
     def test_change_percent(self):
-        payload = _diff("AAPL", 195.0, 100.0, 1234.0)
+        payload = _diff("AAPL", _update(195.0), 100.0)
         assert payload["change_percent"] == 95.0
 
     def test_change_percent_zero_previous(self):
         """A zero previous price must not raise ZeroDivisionError."""
-        payload = _diff("AAPL", 100.0, 0.0, 1234.0)
+        payload = _diff("AAPL", _update(100.0), 0.0)
         assert payload["change_percent"] == 0.0
 
     def test_fields_present(self):
-        payload = _diff("AAPL", 190.0, 189.0, 1234.5)
+        payload = _diff("AAPL", _update(190.0, timestamp=1234.5), 189.0)
         assert set(payload) == {
             "ticker",
             "price",
@@ -77,9 +89,27 @@ class TestDiff:
             "change_percent",
             "direction",
             "timestamp",
+            "reference_price",
+            "daily_change",
+            "daily_change_percent",
         }
         assert payload["ticker"] == "AAPL"
         assert payload["timestamp"] == 1234.5
+
+    def test_daily_change_uses_reference_not_last_sent(self):
+        """daily_* is anchored to the session reference, independent of connection age."""
+        payload = _diff("AAPL", _update(209.0, reference=190.0), 208.0)
+        # Per-connection tick delta is tiny...
+        assert payload["change"] == 1.0
+        # ...while the daily figure reflects the whole session.
+        assert payload["reference_price"] == 190.0
+        assert payload["daily_change"] == 19.0
+        assert payload["daily_change_percent"] == 10.0
+
+    def test_daily_change_none_without_reference(self):
+        payload = _diff("AAPL", _update(190.0), None)
+        assert payload["daily_change"] is None
+        assert payload["daily_change_percent"] is None
 
 
 @pytest.mark.asyncio
@@ -99,14 +129,23 @@ class TestGenerateEvents:
         assert body["seq"] == 1
         assert body["prices"]["AAPL"]["direction"] == "flat"
 
-    async def test_no_data_event_when_cache_empty(self):
-        """An empty priced set produces no data frame, only the initial retry directive."""
+    async def test_empty_cache_still_emits(self):
+        """An empty priced set must still produce a frame.
+
+        Skipping empty ticks would make a healthy connection with an empty
+        watchlist indistinguishable from a dead one, which is exactly the signal
+        the client uses to drive its connection indicator.
+        """
         cache = PriceCache()
         request = _FakeRequest(disconnect_after=1)
 
         events = [event async for event in _generate_events(cache, request, interval=0.001)]
 
-        assert events == ["retry: 1000\n\n"]
+        assert events[0] == "retry: 1000\n\n"
+        assert len(events) == 2
+        body = _parse(events[1])
+        assert body["prices"] == {}
+        assert body["seq"] == 1
 
     async def test_immediate_disconnect_yields_only_retry(self):
         cache = PriceCache()

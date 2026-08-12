@@ -17,11 +17,15 @@ from .seed_prices import (
     DEFAULT_PARAMS,
     INTRA_FINANCE_CORR,
     INTRA_TECH_CORR,
-    SEED_PRICES,
     TICKER_PARAMS,
     TSLA_CORR,
 )
-from .symbols import is_simulated, normalize_symbol
+from .symbols import (
+    InvalidSymbolFormatError,
+    is_simulated,
+    normalize_symbol,
+    reference_price,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +57,15 @@ class GBMSimulator:
         tickers: list[str],
         dt: float = DEFAULT_DT,
         event_probability: float = 0.001,
+        seed: int | None = None,
     ) -> None:
         self._dt = dt
         self._event_prob = event_probability
+
+        # Instance-local RNGs rather than the module-global ones, so a seed makes
+        # a run reproducible without perturbing anything else in the process.
+        self._rng = np.random.default_rng(seed)
+        self._pyrng = random.Random(seed)
 
         # Per-ticker state
         self._tickers: list[str] = []
@@ -82,7 +92,7 @@ class GBMSimulator:
             return {}
 
         # Generate n independent standard normal draws
-        z_independent = np.random.standard_normal(n)
+        z_independent = self._rng.standard_normal(n)
 
         # Apply Cholesky to get correlated draws
         if self._cholesky is not None:
@@ -103,9 +113,9 @@ class GBMSimulator:
 
             # Random event: ~0.1% chance per tick per ticker
             # With 10 tickers at 2 ticks/sec, expect an event ~every 50 seconds
-            if random.random() < self._event_prob:
-                shock_magnitude = random.uniform(0.02, 0.05)
-                shock_sign = random.choice([-1, 1])
+            if self._pyrng.random() < self._event_prob:
+                shock_magnitude = self._pyrng.uniform(0.02, 0.05)
+                shock_sign = self._pyrng.choice([-1, 1])
                 self._prices[ticker] *= 1 + shock_magnitude * shock_sign
                 logger.debug(
                     "Random event on %s: %.1f%% %s",
@@ -149,7 +159,7 @@ class GBMSimulator:
         if ticker in self._prices:
             return
         self._tickers.append(ticker)
-        self._prices[ticker] = SEED_PRICES.get(ticker, random.uniform(50.0, 300.0))
+        self._prices[ticker] = reference_price(ticker)
         self._params[ticker] = TICKER_PARAMS.get(ticker, dict(DEFAULT_PARAMS))
 
     def _rebuild_cholesky(self) -> None:
@@ -173,9 +183,7 @@ class GBMSimulator:
         try:
             self._cholesky = np.linalg.cholesky(corr)
         except np.linalg.LinAlgError:
-            logger.warning(
-                "Correlation matrix not positive semi-definite; using independent draws"
-            )
+            logger.warning("Correlation matrix not positive semi-definite; using independent draws")
             self._cholesky = None
 
     @staticmethod
@@ -216,25 +224,54 @@ class SimulatorDataSource(MarketDataSource):
         price_cache: PriceCache,
         update_interval: float = 0.5,
         event_probability: float = 0.001,
+        seed: int | None = None,
     ) -> None:
         self._cache = price_cache
         self._interval = update_interval
         self._event_prob = event_probability
+        self._seed = seed
         self._sim: GBMSimulator | None = None
         self._task: asyncio.Task | None = None
 
+    @property
+    def _dt(self) -> float:
+        """GBM time step matching the real tick rate.
+
+        Must track `update_interval`: the volatility of a GBM path scales with
+        dt, so a hardcoded dt would mis-scale the simulation whenever the tick
+        rate changed (a 50ms tick with a 500ms dt runs 10x too fast).
+        """
+        return self._interval / GBMSimulator.TRADING_SECONDS_PER_YEAR
+
     async def start(self, tickers: list[str]) -> None:
+        # Startup must survive a watchlist holding symbols this simulator can't
+        # price (hand-edited DB, universe changed under us) — skip and warn
+        # rather than refusing to boot.
+        accepted: list[str] = []
+        for raw in tickers:
+            try:
+                symbol = normalize_symbol(raw)
+            except InvalidSymbolFormatError:
+                logger.warning("Simulator: skipping malformed ticker %r", raw)
+                continue
+            if not is_simulated(symbol):
+                logger.warning("Simulator: skipping %s (outside simulated universe)", symbol)
+                continue
+            accepted.append(symbol)
+
         self._sim = GBMSimulator(
-            tickers=tickers,
+            tickers=accepted,
+            dt=self._dt,
             event_probability=self._event_prob,
+            seed=self._seed,
         )
         # Seed the cache with initial prices so SSE has data immediately
-        for ticker in tickers:
+        for ticker in accepted:
             price = self._sim.get_price(ticker)
             if price is not None:
                 self._cache.update(ticker=ticker, price=price)
         self._task = asyncio.create_task(self._run_loop(), name="simulator-loop")
-        logger.info("Simulator started with %d tickers", len(tickers))
+        logger.info("Simulator started with %d tickers", len(accepted))
 
     async def stop(self) -> None:
         if self._task and not self._task.done():
@@ -247,14 +284,25 @@ class SimulatorDataSource(MarketDataSource):
         logger.info("Simulator stopped")
 
     async def add_ticker(self, ticker: str) -> None:
+        """Add a ticker to the simulation.
+
+        Enforces the same universe check as `ensure_priced()`. Both entry points
+        must agree: the watchlist path reaches this method, and without the check
+        an unrecognized symbol would stream an invented price indefinitely.
+        """
         symbol = normalize_symbol(ticker)
-        if self._sim:
-            self._sim.add_ticker(symbol)
-            # Seed cache immediately so the ticker has a price right away
-            price = self._sim.get_price(symbol)
-            if price is not None:
-                self._cache.update(ticker=symbol, price=price)
-            logger.info("Simulator: added ticker %s", symbol)
+        if not is_simulated(symbol):
+            raise UnknownSymbolError(f"{symbol} is not a symbol this simulated market trades")
+        if self._sim is None:
+            raise PricingUnavailableError(
+                f"Market data is not running; cannot add {symbol}. Call start() first."
+            )
+        self._sim.add_ticker(symbol)
+        # Seed cache immediately so the ticker has a price right away
+        price = self._sim.get_price(symbol)
+        if price is not None:
+            self._cache.update(ticker=symbol, price=price)
+        logger.info("Simulator: added ticker %s", symbol)
 
     async def remove_ticker(self, ticker: str) -> None:
         symbol = normalize_symbol(ticker)
@@ -274,9 +322,7 @@ class SimulatorDataSource(MarketDataSource):
         """
         symbol = normalize_symbol(ticker)  # raises InvalidSymbolFormatError
         if not is_simulated(symbol):
-            raise UnknownSymbolError(
-                f"{symbol} is not a symbol this simulated market trades"
-            )
+            raise UnknownSymbolError(f"{symbol} is not a symbol this simulated market trades")
         cached = self._cache.get_price(symbol)
         if cached is not None:
             return cached

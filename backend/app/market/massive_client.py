@@ -41,6 +41,7 @@ class MassiveDataSource(MarketDataSource):
         self._task: asyncio.Task | None = None
         self._client: RESTClient | None = None
         self._consecutive_failures: int = 0
+        self._references_set: set[str] = set()
 
     async def start(self, tickers: list[str]) -> None:
         self._client = RESTClient(api_key=self._api_key)
@@ -77,6 +78,7 @@ class MassiveDataSource(MarketDataSource):
         symbol = normalize_symbol(ticker)
         self._tickers = [t for t in self._tickers if t != symbol]
         self._cache.remove(symbol)
+        self._references_set.discard(symbol)
         logger.info("Massive: removed ticker %s", symbol)
 
     def get_tickers(self) -> list[str]:
@@ -107,15 +109,14 @@ class MassiveDataSource(MarketDataSource):
             # 404 / empty result = unknown symbol; anything else is transient.
             if _is_not_found(exc):
                 raise UnknownSymbolError(f"{symbol} is not a recognized symbol") from exc
-            raise PricingUnavailableError(
-                f"Could not fetch a price for {symbol}: {exc}"
-            ) from exc
+            raise PricingUnavailableError(f"Could not fetch a price for {symbol}: {exc}") from exc
 
         price = getattr(getattr(snapshot, "last_trade", None), "price", None)
         if price is None:
             raise UnknownSymbolError(f"No trade data available for {symbol}")
 
         timestamp = snapshot.last_trade.timestamp / 1000.0
+        self._apply_reference(snapshot)
         self._cache.update(ticker=symbol, price=price, timestamp=timestamp)
 
         # Success — now (and only now) join the polled set.
@@ -147,6 +148,7 @@ class MassiveDataSource(MarketDataSource):
                     price = snap.last_trade.price
                     # Massive timestamps are Unix milliseconds → convert to seconds
                     timestamp = snap.last_trade.timestamp / 1000.0
+                    self._apply_reference(snap)
                     self._cache.update(
                         ticker=snap.ticker,
                         price=price,
@@ -177,11 +179,31 @@ class MassiveDataSource(MarketDataSource):
                 logger.error("Massive poll failed: %s", e)
 
     def _fetch_snapshots(self) -> list:
-        """Synchronous call to the Massive REST API. Runs in a thread."""
+        """Synchronous call to the Massive REST API. Runs in a thread.
+
+        Takes a copy of the ticker list: this runs in a worker thread while
+        add_ticker/remove_ticker mutate the same list on the event loop, and the
+        SDK iterates it to build the query string.
+        """
         return self._client.get_snapshot_all(
             market_type=SnapshotMarketType.STOCKS,
-            tickers=self._tickers,
+            tickers=list(self._tickers),
         )
+
+    def _apply_reference(self, snap) -> None:
+        """Anchor daily change to the previous session's close, once per ticker.
+
+        Without this the reference defaults to the first price we happen to see,
+        which for a mid-session start is not the daily open and would understate
+        the day's move.
+        """
+        ticker = getattr(snap, "ticker", None)
+        if ticker is None or ticker in self._references_set:
+            return
+        close = getattr(getattr(snap, "prev_day", None), "close", None)
+        if close:
+            self._cache.set_reference(ticker, close)
+            self._references_set.add(ticker)
 
     def _fetch_one(self, symbol: str):
         """Synchronous single-ticker call. Runs in a worker thread."""
@@ -192,8 +214,13 @@ class MassiveDataSource(MarketDataSource):
 
 
 def _is_not_found(exc: Exception) -> bool:
-    """Best-effort classification of 'symbol does not exist' vs. transient failure."""
+    """Best-effort classification of 'symbol does not exist' vs. transient failure.
+
+    Only 404 counts. A 400 means *we* sent a bad request — surfacing that to the
+    user as "not a recognized symbol" would hide our own bug behind a permanent,
+    never-retried rejection.
+    """
     status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
-    if status in (400, 404):
+    if status == 404:
         return True
     return "not found" in str(exc).lower()

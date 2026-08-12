@@ -1,5 +1,13 @@
 """Seed prices and per-ticker parameters for the market simulator."""
 
+# The watchlist a fresh install starts with (PLAN.md section 7, "Default Seed Data").
+# Ordered, unlike SEED_PRICES, because the UI renders it in this order.
+# fmt: off
+DEFAULT_WATCHLIST: list[str] = [
+    "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META", "JPM", "V", "NFLX",
+]
+# fmt: on
+
 # Realistic starting prices for the default watchlist (as of project creation)
 SEED_PRICES: dict[str, float] = {
     "AAPL": 190.00,

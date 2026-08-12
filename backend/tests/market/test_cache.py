@@ -139,3 +139,80 @@ class TestPriceCache:
         finally:
             stop.set()
             writer_thread.join(timeout=2)
+
+
+class TestVersionCounter:
+    """The version counter must reflect every mutation, not just updates."""
+
+    def test_remove_bumps_version(self):
+        """A removal is a change; without a bump it is invisible to version-based
+        consumers until some unrelated ticker happens to tick."""
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        before = cache.version
+
+        cache.remove("AAPL")
+
+        assert cache.version == before + 1
+
+    def test_removing_absent_ticker_does_not_bump(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        before = cache.version
+        cache.remove("NOPE")
+        assert cache.version == before
+
+
+class TestTimestampHandling:
+    def test_explicit_zero_timestamp_is_honoured(self):
+        """0.0 is a legitimate epoch timestamp, not 'unset'."""
+        cache = PriceCache()
+        update = cache.update("AAPL", 190.0, timestamp=0.0)
+        assert update.timestamp == 0.0
+
+    def test_none_timestamp_uses_wall_clock(self):
+        cache = PriceCache()
+        update = cache.update("AAPL", 190.0, timestamp=None)
+        assert update.timestamp > 0
+
+
+class TestReferencePrice:
+    """Reference prices back the watchlist's 'daily change %' column."""
+
+    def test_first_price_becomes_the_reference(self):
+        cache = PriceCache()
+        first = cache.update("AAPL", 190.0)
+        assert first.reference_price == 190.0
+        assert first.daily_change_percent == 0.0
+
+    def test_reference_is_stable_across_updates(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        later = cache.update("AAPL", 209.0)
+        assert later.reference_price == 190.0
+        assert later.daily_change == 19.0
+        assert later.daily_change_percent == 10.0
+
+    def test_set_reference_before_first_update(self):
+        cache = PriceCache()
+        cache.set_reference("AAPL", 200.0)
+        update = cache.update("AAPL", 190.0)
+        assert update.reference_price == 200.0
+        assert update.daily_change == -10.0
+        assert update.daily_change_percent == -5.0
+
+    def test_set_reference_rewrites_existing_update(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        cache.set_reference("AAPL", 200.0)
+        current = cache.get("AAPL")
+        assert current.reference_price == 200.0
+        assert current.price == 190.0
+
+    def test_remove_clears_reference_so_readd_restarts_the_session(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        cache.remove("AAPL")
+        readded = cache.update("AAPL", 250.0)
+        assert readded.reference_price == 250.0
+        assert readded.daily_change == 0.0

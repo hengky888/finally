@@ -10,7 +10,9 @@ class TestPriceUpdate:
 
     def test_price_update_creation(self):
         """Test basic PriceUpdate creation."""
-        update = PriceUpdate(ticker="AAPL", price=190.50, previous_price=190.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=190.50, previous_price=190.00, timestamp=1234567890.0
+        )
         assert update.ticker == "AAPL"
         assert update.price == 190.50
         assert update.previous_price == 190.00
@@ -18,47 +20,65 @@ class TestPriceUpdate:
 
     def test_change_calculation(self):
         """Test price change calculation."""
-        update = PriceUpdate(ticker="AAPL", price=190.50, previous_price=190.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=190.50, previous_price=190.00, timestamp=1234567890.0
+        )
         assert update.change == 0.50
 
     def test_change_negative(self):
         """Test negative price change."""
-        update = PriceUpdate(ticker="AAPL", price=189.50, previous_price=190.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=189.50, previous_price=190.00, timestamp=1234567890.0
+        )
         assert update.change == -0.50
 
     def test_change_percent_up(self):
         """Test percentage change calculation (up)."""
-        update = PriceUpdate(ticker="AAPL", price=190.00, previous_price=100.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=190.00, previous_price=100.00, timestamp=1234567890.0
+        )
         assert update.change_percent == 90.0
 
     def test_change_percent_down(self):
         """Test percentage change calculation (down)."""
-        update = PriceUpdate(ticker="AAPL", price=100.00, previous_price=200.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=100.00, previous_price=200.00, timestamp=1234567890.0
+        )
         assert update.change_percent == -50.0
 
     def test_change_percent_zero_previous(self):
         """Test percentage change with zero previous price."""
-        update = PriceUpdate(ticker="AAPL", price=100.00, previous_price=0.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=100.00, previous_price=0.00, timestamp=1234567890.0
+        )
         assert update.change_percent == 0.0
 
     def test_direction_up(self):
         """Test direction calculation (up)."""
-        update = PriceUpdate(ticker="AAPL", price=191.00, previous_price=190.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=191.00, previous_price=190.00, timestamp=1234567890.0
+        )
         assert update.direction == "up"
 
     def test_direction_down(self):
         """Test direction calculation (down)."""
-        update = PriceUpdate(ticker="AAPL", price=189.00, previous_price=190.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=189.00, previous_price=190.00, timestamp=1234567890.0
+        )
         assert update.direction == "down"
 
     def test_direction_flat(self):
         """Test direction calculation (flat)."""
-        update = PriceUpdate(ticker="AAPL", price=190.00, previous_price=190.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=190.00, previous_price=190.00, timestamp=1234567890.0
+        )
         assert update.direction == "flat"
 
     def test_to_dict(self):
         """Test serialization to dictionary."""
-        update = PriceUpdate(ticker="AAPL", price=190.50, previous_price=190.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=190.50, previous_price=190.00, timestamp=1234567890.0
+        )
         result = update.to_dict()
 
         assert result["ticker"] == "AAPL"
@@ -71,7 +91,65 @@ class TestPriceUpdate:
 
     def test_immutability(self):
         """Test that PriceUpdate is immutable."""
-        update = PriceUpdate(ticker="AAPL", price=190.50, previous_price=190.00, timestamp=1234567890.0)
+        update = PriceUpdate(
+            ticker="AAPL", price=190.50, previous_price=190.00, timestamp=1234567890.0
+        )
 
         with pytest.raises(AttributeError):
             update.price = 200.00  # Should raise error
+
+
+class TestDailyChange:
+    """daily_* is measured from the session reference, not the previous tick."""
+
+    def test_daily_change_from_reference(self):
+        update = PriceUpdate(
+            ticker="AAPL",
+            price=209.0,
+            previous_price=208.5,
+            timestamp=1.0,
+            reference_price=190.0,
+        )
+        assert update.change == 0.5  # tick delta
+        assert update.daily_change == 19.0  # session delta
+        assert update.daily_change_percent == 10.0
+
+    def test_none_without_reference(self):
+        update = PriceUpdate(ticker="AAPL", price=190.0, previous_price=190.0, timestamp=1.0)
+        assert update.reference_price is None
+        assert update.daily_change is None
+        assert update.daily_change_percent is None
+
+    def test_zero_reference_does_not_divide_by_zero(self):
+        update = PriceUpdate(
+            ticker="AAPL",
+            price=190.0,
+            previous_price=190.0,
+            timestamp=1.0,
+            reference_price=0.0,
+        )
+        assert update.daily_change_percent is None
+
+    def test_negative_daily_change(self):
+        update = PriceUpdate(
+            ticker="AAPL",
+            price=171.0,
+            previous_price=171.0,
+            timestamp=1.0,
+            reference_price=190.0,
+        )
+        assert update.daily_change == -19.0
+        assert update.daily_change_percent == -10.0
+
+    def test_to_dict_includes_daily_fields(self):
+        update = PriceUpdate(
+            ticker="AAPL",
+            price=209.0,
+            previous_price=190.0,
+            timestamp=1.0,
+            reference_price=190.0,
+        )
+        payload = update.to_dict()
+        assert payload["reference_price"] == 190.0
+        assert payload["daily_change"] == 19.0
+        assert payload["daily_change_percent"] == 10.0

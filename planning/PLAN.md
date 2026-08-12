@@ -178,9 +178,54 @@ Both the simulator and the Massive client implement the same abstract interface.
 - Endpoint: `GET /api/stream/prices`
 - Long-lived SSE connection; client uses native `EventSource` API
 - Server pushes price updates for all priced tickers (watchlist ∪ open positions) at a regular cadence (~500ms)
-- Each SSE event contains ticker, price, previous price, timestamp, and a `direction` field: one of `"up"`, `"down"`, or `"flat"`
 - The stream re-emits every priced ticker each tick, including unchanged ones (`"flat"`). In real-data mode Massive only refreshes every 2-15s, so most ticks between polls are `"flat"` — the frontend must not treat every tick as a genuine price move
+- **A tick is always emitted, even when nothing is priced.** An empty watchlist yields `"prices": {}` rather than silence, so the client can treat silence as a genuine connection failure and drive its status indicator from it
 - Client handles reconnection automatically (EventSource has built-in retry). There is no `Last-Event-ID` replay: a reconnecting client resumes from the live cache and any ticks missed during the gap are lost (acceptable for this app)
+
+#### Wire format
+
+Every event is a single JSON object under `data:`, wrapped in an envelope:
+
+```json
+{
+  "seq": 12,
+  "ts": 1786524427.628691,
+  "prices": {
+    "AAPL": {
+      "ticker": "AAPL",
+      "price": 190.12,
+      "previous_price": 190.05,
+      "change": 0.07,
+      "change_percent": 0.0368,
+      "direction": "up",
+      "timestamp": 1786524427.5437129,
+      "reference_price": 190.00,
+      "daily_change": 0.12,
+      "daily_change_percent": 0.0632
+    }
+  }
+}
+```
+
+Envelope fields:
+
+| Field | Meaning |
+|---|---|
+| `seq` | Tick counter, **per connection**, starting at 1. It restarts on every reconnect, so it detects gaps *within* one connection only — never use it to reason across a reconnect. |
+| `ts` | Server send time (Unix seconds). Distinct from each ticker's own `timestamp`. |
+| `prices` | Map of ticker → payload. `{}` when nothing is priced. |
+
+Per-ticker fields:
+
+| Field | Meaning |
+|---|---|
+| `price` | Latest price. |
+| `previous_price`, `change`, `change_percent`, `direction` | Measured against **the last price this connection was sent**, not global history. Every client therefore gets a correct flash regardless of when it connected. Two clients connected at different times will legitimately report different `change` values for the same tick. |
+| `timestamp` | When the price was struck — the trade time in Massive mode, which may be seconds older than the envelope `ts`. |
+| `reference_price` | Session anchor: the session-open price in simulator mode, the previous session's close in Massive mode. |
+| `daily_change`, `daily_change_percent` | Measured against `reference_price`. **This is the "daily change %" the watchlist column shows** — it is identical for all clients and independent of connection age. `null` until a reference is established. |
+
+Drive the price flash from `direction`/`change`, and the daily-change column from `daily_change_percent`. Do not use `change_percent` for the latter: it is a per-tick delta and will read as ~0.005%.
 
 ---
 
