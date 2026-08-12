@@ -77,3 +77,36 @@ class TestFactory:
 
         assert isinstance(source, MassiveDataSource)
         assert source._cache is cache
+
+    def test_massive_default_poll_interval(self):
+        """Test that Massive defaults to a 15s poll interval when unset."""
+        cache = PriceCache()
+
+        with patch.dict(os.environ, {"MASSIVE_API_KEY": "test-key"}, clear=True):
+            source = create_market_data_source(cache)
+
+        assert isinstance(source, MassiveDataSource)
+        assert source._interval == 15.0
+
+    def test_massive_receives_custom_poll_interval(self):
+        """Test that MASSIVE_POLL_INTERVAL overrides the default poll cadence."""
+        cache = PriceCache()
+
+        with patch.dict(
+            os.environ,
+            {"MASSIVE_API_KEY": "test-key", "MASSIVE_POLL_INTERVAL": "5.0"},
+            clear=True,
+        ):
+            source = create_market_data_source(cache)
+
+        assert isinstance(source, MassiveDataSource)
+        assert source._interval == 5.0
+
+    def test_simulator_ignores_poll_interval(self):
+        """Test that MASSIVE_POLL_INTERVAL has no effect when the simulator is selected."""
+        cache = PriceCache()
+
+        with patch.dict(os.environ, {"MASSIVE_POLL_INTERVAL": "5.0"}, clear=True):
+            source = create_market_data_source(cache)
+
+        assert isinstance(source, SimulatorDataSource)

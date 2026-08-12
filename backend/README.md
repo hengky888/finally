@@ -9,6 +9,7 @@ FastAPI backend for the FinAlly AI Trading Workstation.
     - `models.py` - PriceUpdate dataclass
     - `cache.py` - Thread-safe price cache
     - `interface.py` - MarketDataSource abstract interface
+    - `symbols.py` - Symbol normalization and validation
     - `simulator.py` - GBM-based market simulator
     - `massive_client.py` - Massive/Polygon.io API client
     - `factory.py` - Data source factory
@@ -22,7 +23,7 @@ FastAPI backend for the FinAlly AI Trading Workstation.
 
 ```bash
 # Install dependencies
-uv sync --dev
+uv sync --extra dev
 
 # Run all tests
 uv run pytest
@@ -45,7 +46,7 @@ uv run pytest -v
 
 ```bash
 # Install dependencies
-uv sync --dev
+uv sync --extra dev
 
 # Run linter
 uv run ruff check .

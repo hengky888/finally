@@ -10,9 +10,5 @@
         ]
       }
     ]
-  },
-  "enabledPlugins": {
-    "independent-reviewer@heng-tools": true,
-    "playwright@claude-plugins-official": true
   }
 }
