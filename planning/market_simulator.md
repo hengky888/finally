@@ -460,7 +460,7 @@ except np.linalg.LinAlgError:
 | `event_probability` | `GBMSimulator.__init__` | `0.001` | Shock chance per ticker per tick |
 | `dt` | `GBMSimulator.__init__` | `~8.48e-8` | GBM step (fraction of a trading year) |
 
-Selection is by absence of `MASSIVE_API_KEY` — see [`market_data_design.md` §7](market_data_design.md#7-environment-configuration).
+Selection is by absence of `MASSIVE_API_KEY` — see [`MARKET_DATA_DESIGN.md` §14](MARKET_DATA_DESIGN.md#14-configuration).
 
 ---
 

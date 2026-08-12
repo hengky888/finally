@@ -6,7 +6,7 @@ This is the entry point for the market data documentation set. Design detail liv
 
 | Document | Covers |
 |---|---|
-| [`market_data_design.md`](market_data_design.md) | Architecture, file structure, SSE streaming, FastAPI lifecycle, watchlist/trade coordination, cross-cutting edge cases |
+| [`MARKET_DATA_DESIGN.md`](MARKET_DATA_DESIGN.md) | **Consolidated design of record** — architecture, all nine modules, SSE streaming, FastAPI lifecycle, watchlist/trade coordination, edge cases, testing |
 | [`market_interface.md`](market_interface.md) | `PriceUpdate`, `PriceCache`, the `MarketDataSource` ABC, error taxonomy, factory, public API |
 | [`market_simulator.md`](market_simulator.md) | GBM math, seed prices, symbol validation, `GBMSimulator`, `SimulatorDataSource`, simulator tests |
 | [`massive_api.md`](massive_api.md) | Massive (Polygon.io) REST integration, polling, ticker management, rate limits, error handling, fallback |
@@ -100,7 +100,7 @@ An earlier code review identified 7 issues. All were resolved in the shipped cod
 Three findings from `REVIEW.md` remain open in the code. Each now has one implementable behaviour specified in the design documents, rather than a list of options.
 
 **1. SSE cadence contradicts the plan (P1).** PLAN §6 promises every priced ticker re-emitted each tick including `"flat"`, but the shipped generator gates on `PriceCache.version`. In Massive mode the stream emits nothing for up to 15 seconds and the frontend cannot distinguish a quiet market from a dead connection. A subtler bug sits behind it: `PriceUpdate.direction` is relative to the last *cache write*, so naively re-emitting a cached update would repeat `"up"` twice a second for the whole inter-poll gap and flash the row green throughout.
-→ **Resolution:** emit unconditionally; compute `direction` per connection against the last price that connection was sent; move the payload to a `{seq, ts, prices}` envelope. Specified in [`market_data_design.md` §3](market_data_design.md#3-sse-streaming--streampy).
+→ **Resolution:** emit unconditionally; compute `direction` per connection against the last price that connection was sent; move the payload to a `{seq, ts, prices}` envelope. Specified in [`MARKET_DATA_DESIGN.md` §10](MARKET_DATA_DESIGN.md#10-sse-streaming--streampy).
 
 **2. Unpriced ticker fills are undefined (P1).** PLAN §8 says a trade in an unpriced ticker auto-adds it and fills from cache, but Massive's `add_ticker` only appends to a list and waits for the next poll. The review also asked whether the automatic watchlist addition is rolled back on failure.
 → **Resolution:** add `ensure_priced(ticker, timeout)` to the interface with typed `UnknownSymbolError` (400, permanent) and `PricingUnavailableError` (503, transient). It is rollback-*free* by construction: the symbol joins the polled set only after a price is confirmed, and the watchlist row is written only after the trade succeeds. Specified in [`market_interface.md` §3](market_interface.md#3-unified-interface--interfacepy).
@@ -151,4 +151,4 @@ Displays a live-updating dashboard with all 10 tickers, sparklines, color-coded 
 
 Everything the rest of the backend needs is re-exported from `app.market`: `PriceCache`, `PriceUpdate`, `MarketDataSource`, `UnknownSymbolError`, `PricingUnavailableError`, `create_market_data_source`, `create_stream_router`, and `normalize_symbol`.
 
-The startup/read/shutdown walkthrough and the full method-by-method contract are in [`market_interface.md` §6](market_interface.md#6-public-api--__init__py). Route-level wiring — lifespan startup, the SSE router, and the watchlist/trade handlers — is in [`market_data_design.md` §4-5](market_data_design.md#4-fastapi-lifecycle-integration).
+The startup/read/shutdown walkthrough and the full method-by-method contract are in [`market_interface.md` §6](market_interface.md#6-public-api--__init__py). Route-level wiring — lifespan startup, the SSE router, and the watchlist/trade handlers — is in [`MARKET_DATA_DESIGN.md` §11-12](MARKET_DATA_DESIGN.md#11-fastapi-lifecycle-integration).
