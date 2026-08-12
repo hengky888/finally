@@ -4,6 +4,23 @@
 **Branch reviewed:** `office-development` @ `b45d882`
 **Scope:** `backend/app/market/` (10 modules, 913 lines), `backend/tests/market/` (8 modules, 127 tests)
 
+> **Status: all findings resolved on `market-data-fixes`.** This document records the
+> review as it stood against `b45d882`; the findings below describe code that has since
+> been changed. Read it as history, not as a current assessment.
+>
+> | Finding | Resolution |
+> |---|---|
+> | §3.1 No FastAPI application | `backend/app/main.py` — lifespan, `.env`, logging, `/api/health`, DI accessors |
+> | §3.2 `add_ticker` bypasses the universe | Raises `UnknownSymbolError`; `start()` skips-and-warns so boot survives a stale watchlist |
+> | §3.3 `dt` decoupled from tick rate | Derived from `update_interval` |
+> | §3.4 Silence on an empty priced set | Emits `"prices": {}` every tick |
+> | §3.5 No daily change % | `reference_price` on `PriceUpdate`; session open (simulator) / previous close (Massive) |
+> | §3.6 Undocumented SSE envelope | `PLAN.md` §6 "Wire format", including `seq` per-connection semantics |
+> | §3.7 Vestigial `version` counter | `remove()` bumps it; purpose documented |
+> | §3.8 Low-severity items | All applied — see the commit |
+>
+> Suite after the fixes: **182 passing, 98% coverage**, `ruff check` and `ruff format --check` clean.
+
 Every finding below was verified by execution — tests run, code paths exercised, the SSE endpoint driven over a real socket. Where a claim is empirical the evidence is quoted.
 
 ---

@@ -7,7 +7,7 @@ import pytest
 
 from app.market.cache import PriceCache
 from app.market.interface import PricingUnavailableError, UnknownSymbolError
-from app.market.massive_client import MassiveDataSource
+from app.market.massive_client import MassiveDataSource, _is_not_found
 
 
 def _make_snapshot(ticker: str, price: float, timestamp_ms: int) -> MagicMock:
@@ -306,3 +306,143 @@ class TestMassiveDataSource:
         with patch.object(source, "_fetch_one", side_effect=_slow_fetch):
             with pytest.raises(PricingUnavailableError):
                 await source.ensure_priced("AAPL", timeout=0.01)
+
+
+class TestErrorClassification:
+    """Permanent vs transient decides whether the user sees a retry or a rejection."""
+
+    def test_404_is_unknown_symbol(self):
+        exc = Exception("boom")
+        exc.status = 404
+        assert _is_not_found(exc) is True
+
+    def test_400_is_not_treated_as_unknown_symbol(self):
+        """A 400 means we sent a bad request; reporting it as 'no such symbol'
+        would hide our own bug behind a permanent, never-retried rejection."""
+        exc = Exception("Bad Request")
+        exc.status = 400
+        assert _is_not_found(exc) is False
+
+    def test_429_is_transient(self):
+        exc = Exception("rate limited")
+        exc.status = 429
+        assert _is_not_found(exc) is False
+
+    def test_message_fallback(self):
+        assert _is_not_found(Exception("Ticker Not Found")) is True
+
+    def test_unclassifiable_defaults_to_transient(self):
+        assert _is_not_found(Exception("connection reset")) is False
+
+
+@pytest.mark.asyncio
+class TestMassiveErrorMapping:
+    async def test_400_surfaces_as_transient_not_permanent(self):
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="k", price_cache=cache)
+        source._client = MagicMock()
+        exc = Exception("Bad Request")
+        exc.status = 400
+
+        with patch.object(source, "_fetch_one", side_effect=exc):
+            with pytest.raises(PricingUnavailableError):
+                await source.ensure_priced("AAPL")
+
+    async def test_404_surfaces_as_unknown_symbol(self):
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="k", price_cache=cache)
+        source._client = MagicMock()
+        exc = Exception("not found")
+        exc.status = 404
+
+        with patch.object(source, "_fetch_one", side_effect=exc):
+            with pytest.raises(UnknownSymbolError):
+                await source.ensure_priced("AAPL")
+
+
+@pytest.mark.asyncio
+class TestMassiveDailyChange:
+    """Daily change must anchor to the previous close, not to whenever we started."""
+
+    async def test_prev_day_close_becomes_the_reference(self):
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="k", price_cache=cache, poll_interval=60.0)
+        source._tickers = ["AAPL"]
+        source._client = MagicMock()
+
+        snap = _make_snapshot("AAPL", 209.0, 1707580800000)
+        snap.prev_day.close = 190.0
+
+        with patch.object(source, "_fetch_snapshots", return_value=[snap]):
+            await source._poll_once()
+
+        update = cache.get("AAPL")
+        assert update.reference_price == 190.0
+        assert update.daily_change == 19.0
+        assert update.daily_change_percent == 10.0
+
+    async def test_missing_prev_day_falls_back_to_first_price(self):
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="k", price_cache=cache, poll_interval=60.0)
+        source._tickers = ["AAPL"]
+        source._client = MagicMock()
+
+        snap = _make_snapshot("AAPL", 209.0, 1707580800000)
+        snap.prev_day = None
+
+        with patch.object(source, "_fetch_snapshots", return_value=[snap]):
+            await source._poll_once()
+
+        update = cache.get("AAPL")
+        assert update.reference_price == 209.0
+        assert update.daily_change == 0.0
+
+    async def test_reference_set_once_not_per_poll(self):
+        """Re-anchoring every poll would make the daily figure drift."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="k", price_cache=cache, poll_interval=60.0)
+        source._tickers = ["AAPL"]
+        source._client = MagicMock()
+
+        first = _make_snapshot("AAPL", 200.0, 1707580800000)
+        first.prev_day.close = 190.0
+        second = _make_snapshot("AAPL", 210.0, 1707580900000)
+        second.prev_day.close = 999.0  # a bad late value must not take effect
+
+        with patch.object(source, "_fetch_snapshots", return_value=[first]):
+            await source._poll_once()
+        with patch.object(source, "_fetch_snapshots", return_value=[second]):
+            await source._poll_once()
+
+        assert cache.get("AAPL").reference_price == 190.0
+
+    async def test_remove_clears_reference_so_readd_reanchors(self):
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="k", price_cache=cache, poll_interval=60.0)
+        source._tickers = ["AAPL"]
+        source._client = MagicMock()
+
+        snap = _make_snapshot("AAPL", 200.0, 1707580800000)
+        snap.prev_day.close = 190.0
+        with patch.object(source, "_fetch_snapshots", return_value=[snap]):
+            await source._poll_once()
+
+        await source.remove_ticker("AAPL")
+        assert "AAPL" not in source._references_set
+
+
+@pytest.mark.asyncio
+class TestFetchSnapshotsIsolation:
+    async def test_ticker_list_is_copied_for_the_worker_thread(self):
+        """The SDK iterates this list in a thread while the loop mutates it."""
+        cache = PriceCache()
+        source = MassiveDataSource(api_key="k", price_cache=cache)
+        source._client = MagicMock()
+        source._client.get_snapshot_all.return_value = []
+        source._tickers = ["AAPL", "GOOGL"]
+
+        source._fetch_snapshots()
+
+        passed = source._client.get_snapshot_all.call_args.kwargs["tickers"]
+        assert passed == ["AAPL", "GOOGL"]
+        assert passed is not source._tickers

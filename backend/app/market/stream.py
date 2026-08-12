@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from .cache import PriceCache
+from .models import PriceUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,8 @@ def create_stream_router(price_cache: PriceCache, interval: float = 0.5) -> APIR
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
+                # No "Connection" header: it is hop-by-hop, already the default
+                # under HTTP/1.1, and illegal under HTTP/2.
                 "X-Accel-Buffering": "no",  # Disable nginx buffering if proxied
             },
         )
@@ -46,8 +48,14 @@ def create_stream_router(price_cache: PriceCache, interval: float = 0.5) -> APIR
     return router
 
 
-def _diff(ticker: str, price: float, last: float | None, timestamp: float) -> dict:
-    """Build one ticker's payload relative to the last price THIS connection sent."""
+def _diff(ticker: str, update: PriceUpdate, last: float | None) -> dict:
+    """Build one ticker's payload relative to the last price THIS connection sent.
+
+    `change`/`direction` are per-connection so every client gets a correct flash
+    regardless of when it connected. `daily_*` come from the cache's session
+    reference and are identical for all clients.
+    """
+    price = update.price
     previous = price if last is None else last
     change = round(price - previous, 4)
     if change > 0:
@@ -63,7 +71,10 @@ def _diff(ticker: str, price: float, last: float | None, timestamp: float) -> di
         "change": change,
         "change_percent": round(change / previous * 100, 4) if previous else 0.0,
         "direction": direction,
-        "timestamp": timestamp,
+        "timestamp": update.timestamp,
+        "reference_price": update.reference_price,
+        "daily_change": update.daily_change,
+        "daily_change_percent": update.daily_change_percent,
     }
 
 
@@ -94,16 +105,17 @@ async def _generate_events(
 
             snapshot = price_cache.get_all()
             prices = {
-                ticker: _diff(ticker, u.price, last_sent.get(ticker), u.timestamp)
-                for ticker, u in snapshot.items()
+                ticker: _diff(ticker, u, last_sent.get(ticker)) for ticker, u in snapshot.items()
             }
             # Forget tickers that left the priced set, so a re-add starts flat.
             last_sent = {ticker: u.price for ticker, u in snapshot.items()}
 
-            if prices:
-                seq += 1
-                payload = json.dumps({"seq": seq, "ts": time.time(), "prices": prices})
-                yield f"data: {payload}\n\n"
+            # Emit unconditionally, including `prices: {}` for an empty watchlist.
+            # Skipping empty ticks would make a healthy connection indistinguishable
+            # from a dead one in exactly the case where the user has no tickers.
+            seq += 1
+            payload = json.dumps({"seq": seq, "ts": time.time(), "prices": prices})
+            yield f"data: {payload}\n\n"
 
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
