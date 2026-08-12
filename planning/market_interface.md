@@ -2,7 +2,7 @@
 
 The types, classes, methods, and errors that make up the market data subsystem's public contract. Everything here is source-agnostic: it holds identically whether prices come from the GBM simulator or the Massive REST API.
 
-Architecture and wiring are in [`market_data_design.md`](market_data_design.md). Implementations are in [`market_simulator.md`](market_simulator.md) and [`massive_api.md`](massive_api.md).
+Architecture and wiring are in [`MARKET_DATA_DESIGN.md`](MARKET_DATA_DESIGN.md). Implementations are in [`market_simulator.md`](market_simulator.md) and [`massive_api.md`](massive_api.md).
 
 Snippets are labelled **as built** or **change required**.
 
@@ -80,7 +80,7 @@ class PriceUpdate:
 - **Derived properties, not stored fields** — `change`, `change_percent`, and `direction` are computed from `price` and `previous_price`, so they can never drift out of sync with each other.
 - **`previous_price` is "previous write to the cache"**, not "previous close". Day-over-day change is a separate concern; if the frontend needs it later, add a `previous_close` field populated from the Massive `day.previous_close` and defaulted to the session seed in simulator mode.
 
-> **Note on `direction`.** `PriceUpdate.direction` is relative to the previous *cache write*. That is not the same as "changed since the last SSE event the client saw" — in Massive mode, the cached update sits unchanged between polls, still reporting `"up"` from the last poll. [`market_data_design.md` §3](market_data_design.md#3-sse-streaming--streampy) explains why the SSE layer computes its own per-connection direction rather than forwarding this one.
+> **Note on `direction`.** `PriceUpdate.direction` is relative to the previous *cache write*. That is not the same as "changed since the last SSE event the client saw" — in Massive mode, the cached update sits unchanged between polls, still reporting `"up"` from the last poll. [`MARKET_DATA_DESIGN.md` §10](MARKET_DATA_DESIGN.md#10-sse-streaming--streampy) explains why the SSE layer computes its own per-connection direction rather than forwarding this one.
 
 ---
 
@@ -166,7 +166,7 @@ class PriceCache:
 
 **Memory.** O(number of priced tickers) — one `PriceUpdate` each, replaced on write. There is no history in the cache; the price series shown in the UI is accumulated client-side from SSE (PLAN §10), and portfolio history lives in `portfolio_snapshots`.
 
-**On `version`.** The counter remains useful for diagnostics and tests, but it is no longer the SSE emit gate — the stream emits unconditionally. See [`market_data_design.md` §3.1](market_data_design.md#31-the-contract-gap).
+**On `version`.** The counter remains useful for diagnostics and tests, but it is no longer the SSE emit gate — the stream emits unconditionally. See [`MARKET_DATA_DESIGN.md` §10.1](MARKET_DATA_DESIGN.md#101-why-the-stream-emits-unconditionally).
 
 ---
 
@@ -282,7 +282,7 @@ Three error types cover every rejection path. Routes map them to status codes wi
 | `UnknownSymbolError` | `interface.py` | Well-formed, but this source cannot price it | 400 | No |
 | `PricingUnavailableError` | `interface.py` | Valid symbol, no price obtainable right now (timeout, rate limit, network, source not running) | 503 | Yes |
 
-`InvalidSymbolFormatError` subclasses `ValueError` and is raised by `normalize_symbol`, which runs *before* either the data source or the watchlist table is mutated. The two source-level errors are raised from `ensure_priced`. Route-level handling is shown in [`market_data_design.md` §5](market_data_design.md#5-watchlist--trade-coordination).
+`InvalidSymbolFormatError` subclasses `ValueError` and is raised by `normalize_symbol`, which runs *before* either the data source or the watchlist table is mutated. The two source-level errors are raised from `ensure_priced`. Route-level handling is shown in [`MARKET_DATA_DESIGN.md` §12](MARKET_DATA_DESIGN.md#12-watchlist--trade-coordination).
 
 ---
 

@@ -270,13 +270,13 @@ Because the batch endpoint collapses all tickers into one request, ticker count 
 
 ### Market-hours behaviour
 
-Outside regular trading hours `last_trade.price` is the last print (possibly after-hours), so prices simply stop moving. This is correct and needs no special handling — but it is exactly why the SSE contract must re-emit `"flat"` ticks (see [`market_data_design.md` §3.1](market_data_design.md#31-the-contract-gap)) rather than falling silent, so the frontend keeps rendering and the connection indicator stays green.
+Outside regular trading hours `last_trade.price` is the last print (possibly after-hours), so prices simply stop moving. This is correct and needs no special handling — but it is exactly why the SSE contract must re-emit `"flat"` ticks (see [`MARKET_DATA_DESIGN.md` §10.1](MARKET_DATA_DESIGN.md#101-why-the-stream-emits-unconditionally)) rather than falling silent, so the frontend keeps rendering and the connection indicator stays green.
 
 ---
 
 ## 6. Error Handling & Fallback Behaviour
 
-The governing rule is invariant 4 from [`market_data_design.md` §1](market_data_design.md#1-architecture): the poll loop never raises. Every failure is logged and retried on the next interval, so a transient API problem degrades to stale prices rather than a dead backend.
+The governing rule is invariant 4 from [`MARKET_DATA_DESIGN.md` §1](MARKET_DATA_DESIGN.md#1-architecture): the poll loop never raises. Every failure is logged and retried on the next interval, so a transient API problem degrades to stale prices rather than a dead backend.
 
 **6.1 Invalid API key.** The first poll fails with 401, is logged, and the loop keeps retrying. The cache stays empty, so SSE emits nothing and the UI shows a connected-but-empty terminal. **Change required:** count consecutive poll failures and log an escalated `ERROR` after 3, naming 401 explicitly — a silent empty grid is the single most confusing failure mode in this app. Surfacing this through `/api/health` is a reasonable follow-on.
 
@@ -307,7 +307,7 @@ The governing rule is invariant 4 from [`market_data_design.md` §1](market_data
 | `poll_interval` | `MassiveDataSource.__init__` | `15.0` s | Poll cadence; set from `MASSIVE_POLL_INTERVAL` |
 | `timeout` | `ensure_priced` | `5.0` s | On-demand price fetch budget — one round trip with slack |
 
-Environment variables (`MASSIVE_API_KEY`, `MASSIVE_POLL_INTERVAL`) and the source-selection rule are in [`market_data_design.md` §7](market_data_design.md#7-environment-configuration); the factory that reads them is in [`market_interface.md` §5](market_interface.md#5-factory--factorypy).
+Environment variables (`MASSIVE_API_KEY`, `MASSIVE_POLL_INTERVAL`) and the source-selection rule are in [`MARKET_DATA_DESIGN.md` §14](MARKET_DATA_DESIGN.md#14-configuration); the factory that reads them is in [`market_interface.md` §5](market_interface.md#5-factory--factorypy).
 
 ---
 
